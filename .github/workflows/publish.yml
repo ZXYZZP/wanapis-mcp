@@ -1,0 +1,40 @@
+name: Publish to npm
+
+# 用 npm Trusted Publishing(OIDC):CI 里不存放任何 npm 凭据。
+# 需要先在 npmjs.com 的包设置里把本仓库 + 本 workflow 登记为受信任发布者。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write      # OIDC 换取发布凭据，缺了会直接失败
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 自带的是 npm 10.x，不支持 trusted publishing
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+      - run: npm test
+
+      # 发布前确认 tag 与 package.json 版本一致，避免发错版本号
+      - name: 校验版本号
+        if: github.event_name == 'release'
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "版本不一致: package.json=$PKG tag=$TAG"; exit 1
+          fi
+
+      - run: npm publish

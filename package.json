@@ -6,6 +6,9 @@
   "bin": {
     "wanapis-mcp": "src/index.js"
   },
+  "scripts": {
+    "test": "node --test test/"
+  },
   "keywords": [
     "mcp",
     "modelcontextprotocol",

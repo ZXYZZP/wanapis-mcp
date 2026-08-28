@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json 声明 engines >=18，就要真的在 18 上跑得起来
+        node: ['18', '20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  package:
+    # 验证 files 白名单没漏文件、bin 装完能跑 —— 这类问题只在安装后暴露
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: 打包并安装到干净目录
+        run: |
+          TGZ=$(npm pack --silent | tail -1)
+          mkdir -p /tmp/installtest && mv "$TGZ" /tmp/installtest/
+          cd /tmp/installtest
+          npm init -y >/dev/null
+          npm install "./$TGZ"
+      - name: 装好的 bin 能完成 MCP 握手
+        run: |
+          cd /tmp/installtest
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            | WANAPIS_API_KEY=sk-dummy ./node_modules/.bin/wanapis-mcp \
+            | grep -q '"name":"wanapis-mcp"' && echo "握手 OK"
