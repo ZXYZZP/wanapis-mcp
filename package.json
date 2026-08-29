@@ -7,7 +7,8 @@
     "wanapis-mcp": "src/index.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "build:skill-zip": "bash scripts/build-skill-zip.sh"
   },
   "keywords": [
     "mcp",

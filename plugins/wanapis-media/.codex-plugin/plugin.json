@@ -1,0 +1,46 @@
+{
+  "name": "wanapis-media",
+  "version": "0.1.0",
+  "description": "Generate images and video from inside Codex — Seedance, Veo, Kling, Midjourney, Seedream, Nano Banana and GPT-Image, through one WanAPIs key, with the cost shown before you run.",
+  "author": {
+    "name": "WanAPIs",
+    "email": "support@wanapis.com",
+    "url": "https://wanapis.com/"
+  },
+  "homepage": "https://wanapis.com/agents",
+  "license": "MIT",
+  "keywords": [
+    "image generation",
+    "video generation",
+    "text to image",
+    "text to video",
+    "seedance",
+    "veo",
+    "kling",
+    "midjourney",
+    "seedream",
+    "nano banana"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WanAPIs Media",
+    "shortDescription": "Generate images and video with cost estimates",
+    "longDescription": "Create images and video without leaving Codex. Every major model is reachable through a single WanAPIs key — Seedance, Veo, Kling, Midjourney, Seedream, Nano Banana and GPT-Image. You say low, medium or high; the plugin translates that into whatever each provider actually calls it. Because generation is billed per call, it estimates the cost from the live pricing feed before running, and reports what you were actually charged afterwards.",
+    "developerName": "WanAPIs",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://wanapis.com/agents",
+    "privacyPolicyURL": "https://wanapis.com/legal/privacy",
+    "termsOfServiceURL": "https://wanapis.com/legal/terms",
+    "composerIcon": "./assets/wanapis.svg",
+    "logo": "./assets/wanapis.svg",
+    "logoDark": "./assets/wanapis-dark.svg",
+    "defaultPrompt": [
+      "Generate a 5-second video of a paper plane gliding over a city at dusk",
+      "Make a product hero image of a ceramic mug on a linen backdrop",
+      "What would a 10-second 1080p clip cost on each video model?"
+    ],
+    "brandColor": "#4F39E8",
+    "screenshots": []
+  }
+}

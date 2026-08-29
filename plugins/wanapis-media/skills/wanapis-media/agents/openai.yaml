@@ -1,0 +1,4 @@
+interface:
+  display_name: "WanAPIs Media"
+  short_description: "Generate images and video with cost estimates"
+  default_prompt: "Use $wanapis-media when the user asks to generate an image or a video, or asks what such a generation would cost. Estimate first and show the amount before spending."

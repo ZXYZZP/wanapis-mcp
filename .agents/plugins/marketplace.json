@@ -1,0 +1,20 @@
+{
+  "name": "wanapis",
+  "interface": {
+    "displayName": "WanAPIs"
+  },
+  "plugins": [
+    {
+      "name": "wanapis-media",
+      "source": {
+        "source": "local",
+        "path": "./plugins/wanapis-media"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
