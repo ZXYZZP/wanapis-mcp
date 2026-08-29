@@ -98,9 +98,12 @@ export class WanApisClient {
    * 主动重写掉了(防多出口泄露)，所以不存在可公开分享的地址。
    */
   async download(url, destDir, basename) {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
-    });
+    // ⚠️ 只对自家域名带 Authorization。图片结果是上游 CDN 直链(本来就公开)，
+    // 对它发 key 等于把用户凭据泄露给第三方；视频走自家代理，不带 key 会 401。
+    const sameHost = new URL(url).host === new URL(this.baseUrl).host;
+    const res = await fetch(url, sameHost
+      ? { headers: { Authorization: `Bearer ${this.apiKey}` } }
+      : {});
     if (!res.ok) throw new Error(`download failed ${res.status} for ${url}`);
     const type = (res.headers.get('content-type') || '').split(';')[0].trim();
     const ext = EXT_BY_TYPE[type] || '.bin';
