@@ -10,11 +10,10 @@
         "source": "local",
         "path": "./plugins/wanapis-media"
       },
+      "category": "Productivity",
       "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "NONE"
-      },
-      "category": "Productivity"
+        "installation": "AVAILABLE"
+      }
     }
   ]
 }
