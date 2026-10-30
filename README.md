@@ -74,7 +74,10 @@ Verified end to end against real billing: the seedance job above was charged
   practice — longer than the tool timeout most MCP clients enforce. So
   `generate_image` waits 50s for a fast result and otherwise hands back a
   `job_id` while the request keeps running in the background. Either way the
-  request is sent once and billed once.
+  request is sent once and billed once. Local image jobs returned as a `job_id`
+  remain queryable for 30 minutes from submission, so you can check the result first and then call
+  `check_task` again with `save_dir`, including after a download error. Jobs are
+  kept in memory and do not survive a server restart.
 - **Video URLs need your API key; image URLs do not.** Video results are served
   through the gateway's own media proxy, so opening one in a browser returns
   401 — don't hand the raw link to a user. Images come back as upstream CDN

@@ -117,13 +117,14 @@ export class WanApisClient {
 /**
  * 从任务响应里抽出媒体 URL。
  *
- * 一共要认四种形状 —— 前两种是 WanAPIs 自己的 API 形状，后两种是各家上游的
- * 原始结构(经 task.data 透传下来):
+ * 要兼容网关规范字段和各家上游的原始结构(经 task.data 透传下来)，
+ * 异步图片还会保留上游自己的 code/data 信封:
  *
  *   data.result_url                     网关规范字段，指向自家媒体代理
  *   data.data.content.video_url         火山口径
  *   data.data.result.videos[].url[]     apimart 口径(url 本身是数组)
  *   data.data.result.images[].url[]     图片同上;Midjourney 一次 4 个 URL
+ *   data.data.data.result.images[].url[] 异步图片保留完整上游 code/data 信封
  *
  * ⚠️ 代理是**按需回源**、不长期存储，所以上游直链一过期(约 24h)这个地址也
  * 跟着失效;而且它要带 key 才能访问。真要留存必须 download() 落地。
@@ -141,7 +142,7 @@ export function extractMediaUrls(payload) {
   push(inner?.content?.video_url);
   push(inner?.content?.image_url);
 
-  const result = inner?.result ?? d?.result;
+  const result = inner?.result ?? inner?.data?.result ?? d?.result;
   for (const item of result?.videos ?? result?.images ?? []) {
     const u = item?.url;
     if (Array.isArray(u)) u.forEach(push);
