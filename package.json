@@ -1,6 +1,6 @@
 {
   "name": "@wanapis/mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for WanAPIs image and video generation. One key, every model.",
   "type": "module",
   "bin": {
@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "build:skill-zip": "bash scripts/build-skill-zip.sh"
+    "sync:skill": "node scripts/sync-skill.mjs",
+    "build:skill-zip": "node scripts/sync-skill.mjs && bash scripts/build-skill-zip.sh"
   },
   "keywords": [
     "mcp",

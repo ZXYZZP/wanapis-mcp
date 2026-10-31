@@ -1,91 +1,100 @@
 ---
 name: wanapis-media
-description: Generate images and video through WanAPIs — Seedance, Veo, Kling, Midjourney, Seedream, Nano Banana, GPT-Image. Use when the user asks to create, generate, or render an image or a video, or asks what such a generation would cost. Handles per-model parameter differences, async polling and cost estimates.
+description: Generate images and video through WanAPIs, including GPT Image 2.5 Flare/Sunburst and MiniMax H3, plus Seedance, Veo, Kling, Midjourney, Seedream and Nano Banana. Use for generation, image editing, model discovery and budget estimates. Handles verified native parameters, async polling and media downloads.
 license: MIT
 ---
 
 # WanAPIs image and video generation
 
-One API key reaches every major image and video model. This skill covers picking a
-model, translating parameters, polling async jobs and knowing the cost up front.
+Use the dependency-free CLI `node scripts/wanapis.mjs --help`. Generation and task
+queries require `WANAPIS_API_KEY`; public model listing and estimates use the
+unauthenticated pricing feed. `WANAPIS_BASE_URL` optionally selects another gateway.
 
-## Setup
+## Estimate before generation
 
-Requires `WANAPIS_API_KEY` in the environment (get one at https://wanapis.com).
-Check it is set before doing anything else; if it is missing, tell the user where
-to get a key rather than guessing at another provider.
+Show the budget and obtain the user's spending approval before submitting a paid
+request, unless that spend is already authorized. Do not submit generation merely
+to discover parameters or availability.
 
-Everything below runs through one dependency-free script:
-
-```bash
-node scripts/wanapis.mjs --help
+```sh
+node scripts/wanapis.mjs models
+node scripts/wanapis.mjs estimate --model minimax-h3 --seconds 4 --resolution 768P --context-ir-enabled false
 ```
 
-## Estimate before you generate
+Estimates use CNY and `--group-ratio 1` by default. That multiplier is a user
+assumption, not the key's actual routing group, and does not alter generation.
+H3 includes duration/priority multipliers and the optional IR fee. Image 2.5 tier
+prices are precharges: reference images, dimensions and prompt content can raise
+actual usage and cause an additional debit on completion. Do not promise a final
+invoice from an estimate; inspect `chargedCny` and usage logs after completion.
 
-Generation is billed per call. **Always estimate first and show the user the number**
-unless they have already approved the spend. Video in particular ranges from ¥0.14
-to ¥9 per clip depending on model and resolution.
+## GPT Image 2.5
 
-```bash
-node scripts/wanapis.mjs estimate --model seedance-2.0-mini --quality low --seconds 5
-# → 0.6975  (0.1395/s × 5s)
+Both variants are asynchronous. Use `gpt-image-2.5-flare` or
+`gpt-image-2.5-sunburst`. Quality and resolution are independent; defaults are
+explicitly **low / 1k / one image**.
+
+```sh
+node scripts/wanapis.mjs image "a plain ceramic mug on a table" \
+  --model gpt-image-2.5-flare --quality low --resolution 1k --count 1 \
+  --aspect 1:1 --out ./mug.png
 ```
 
-## Generate an image
+- `--quality`: low / medium / high / xhigh / max.
+- `--resolution`: 1k / 2k / 4k. Higher quality and resolution multiply the budget.
+- `--count`: a positive integer, mapped to `n`; no undocumented maximum is assumed.
+- Repeat `--reference-image <public URL>` for editing inputs. References contribute
+  to actual usage. Use `--size` or `--aspect` without conflicting values.
+- Do not omit quality in raw upstream requests and assume it means low: the service
+  may select an automatic tier. This CLI explicitly supplies its documented defaults.
 
-```bash
-node scripts/wanapis.mjs image "a red apple on a white table" \
-  --model gpt-image-2 --quality low --aspect 1:1 --out ./apple.png
+## MiniMax H3
+
+H3 uses native resolution rather than generic `quality`. Defaults are **4 seconds /
+768P / 9:16 / fast off / IR on**.
+
+```sh
+node scripts/wanapis.mjs video "a paper plane glides over a field" \
+  --model minimax-h3 --resolution 768P --seconds 4 --ratio 16:9 \
+  --fast-mode false --context-ir-enabled false --out ./clip.mp4
 ```
 
-Takes 25s–5min. The script submits, polls if needed, and downloads the file.
+Resolution: 480p / 768P / 1080p / 2K. Duration: integer 4–30 seconds, but 2K permits
+at most 15 seconds. Ratios: 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16. `--image <URL>`
+provides at most one opening-frame image, sent as an `input_reference` object.
+No multiple image inputs, reference video/audio, or 4K tier are supported.
 
-## Generate a video
+`--fast-mode true` doubles the video component; clips from 16 seconds double the
+entire video component. IR is a separate fee per request and is not doubled by
+either option. Pass booleans as the literal flag values `true` or `false`.
 
-```bash
-node scripts/wanapis.mjs video "a paper plane over a city at dusk" \
-  --model seedance-2.0-mini --quality low --seconds 5 --aspect 16:9 --out ./clip.mp4
+## Existing adapters
+
+Existing Seedance, Veo, Kling, Vidu, HappyHorse, Grok, Seedream, Nano Banana,
+GPT Image and Midjourney adapters retain their `low` / `medium` / `high` mappings.
+Use `reference/models.md` for capabilities and `models` for the current catalog
+intersection. A newly advertised model is not considered supported until its
+protocol adapter is verified. A public listing does not prove key permissions or
+that a channel is healthy.
+
+```sh
+node scripts/wanapis.mjs image "a red apple" --model gpt-image-2 --quality low --out apple.png
+node scripts/wanapis.mjs video "a paper plane" --model seedance-2.0-mini --quality low --seconds 5 --out clip.mp4
 ```
 
-Takes 60–150s. Same submit-poll-download flow.
+## Async tasks and files
 
-## Picking a model
+The CLI submits once, polls, and optionally downloads. If polling is interrupted,
+recover the existing task rather than submitting another paid generation:
 
-| Need | Use |
-|---|---|
-| Cheapest video draft | `seedance-2.0-mini` |
-| Best video quality | `seedance-2.5` or `veo3.1-quality` |
-| Natural human motion | `kling-v3` |
-| Everyday image | `gpt-image-2` |
-| Best image quality | `nano-banana-pro` or `seedream-5-0-pro` |
-| Stylised / artistic image | `midjourney` (returns 4 variations) |
+```sh
+node scripts/wanapis.mjs task <task_id> --kind video --out ./clip.mp4
+```
 
-`quality` is always `low` / `medium` / `high`; the script maps it to whatever that
-model actually calls it (Seedance wants `480p`, Kling wants `std`, Midjourney wants
-`--q .25` inside the prompt). Never pass raw provider parameters yourself.
+Video URLs require authentication; image CDN URLs may be public. Use `--out` to
+keep a file, because result URLs expire with the upstream result. A local file path
+cannot serve as a remote reference image URL.
 
-Full catalogue with live pricing: `reference/models.md`, or run
-`node scripts/wanapis.mjs models`.
-
-## Things that will bite you
-
-- **Estimates are budgets, not quotes.** Upstreams do not always honour the exact
-  request — a 4-second video came back as 5 seconds and was billed for 5. After a
-  job finishes the script reports the amount actually charged; use that number when
-  reporting cost to the user.
-- **Cancelling does not stop billing.** Killing the request mid-flight does not
-  cancel work upstream; it completes and is charged anyway. Never "retry to make it
-  faster" — you pay for both. Wait, or poll.
-- **Video URLs are not shareable, image URLs are.** Video results are served through
-  an authenticated proxy and return 401 in a browser; images are public CDN links.
-  Always use `--out` to save a file rather than handing a raw video URL to the user.
-- **Result URLs expire in roughly 24 hours.** Download anything worth keeping.
-- **Midjourney returns 4 images per call** and is billed once for the set.
-
-## When a generation fails
-
-Failures are usually upstream capacity, not a bad request. The script surfaces the
-gateway's message. Retrying the same prompt once is reasonable; retrying repeatedly
-is not — each attempt is billed. If a model keeps failing, switch models rather than
-looping.
+Cancelling the client does not cancel upstream work or its charge. Do not retry a
+slow submission to make it faster. A failed or unknown submission needs inspection
+before another paid request; respect the user's existing spend authorization.

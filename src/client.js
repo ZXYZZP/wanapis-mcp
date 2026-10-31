@@ -22,14 +22,14 @@ export class WanApisClient {
     this.baseUrl = (baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
   }
 
-  async #request(path, { method = 'GET', body, timeoutMs = 120000 } = {}) {
+  async #request(path, { method = 'GET', body, timeoutMs = 120000, authenticated = true } = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(this.baseUrl + path, {
         method,
         headers: {
-          Authorization: `Bearer ${this.apiKey}`,
+          ...(authenticated ? { Authorization: `Bearer ${this.apiKey}` } : {}),
           'Content-Type': 'application/json',
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -87,7 +87,7 @@ export class WanApisClient {
   }
 
   async pricing() {
-    return this.#request('/api/pricing', { timeoutMs: 30000 });
+    return this.#request('/api/pricing', { timeoutMs: 30000, authenticated: false });
   }
 
   /**
