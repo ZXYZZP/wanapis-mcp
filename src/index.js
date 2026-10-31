@@ -33,6 +33,8 @@ import {
   buildVideoBody,
   submitPath,
 } from './models.js';
+import { parseCatalog, listCatalogModels } from './catalog.js';
+import { estimateCost, normalizeEstimateOptions } from './pricing.js';
 
 const client = new WanApisClient({
   apiKey: process.env.WANAPIS_API_KEY,
@@ -99,6 +101,7 @@ const TOOLS = [
     description:
       'Generate an image with WanAPIs. Returns image URLs directly if it finishes quickly, ' +
       'otherwise a job_id to poll with wanapis_check_task (generation can take 1-5 minutes). ' +
+      'Image 2.5 returns an async task_id; quality and resolution are independent and default to low/1k/1 image. ' +
       'Midjourney returns 4 images per call (its 2x2 grid, split). ' +
       `Models: ${modelList(IMAGE_MODELS)}`,
     inputSchema: {
@@ -108,17 +111,20 @@ const TOOLS = [
         model: { type: 'string', enum: Object.keys(IMAGE_MODELS), default: 'gpt-image-2' },
         quality: {
           type: 'string',
-          enum: QUALITY_ENUM,
-          default: 'medium',
-          description: 'Maps to each model\'s native resolution tier. Higher costs more.',
+          enum: [...QUALITY_ENUM, 'xhigh', 'max'],
+          description: 'Image 2.5: native quality, default low; resolution is independent. Other models: low/medium/high mapped to resolution, default medium.',
         },
         aspect: { type: 'string', description: 'Aspect ratio, e.g. 1:1, 16:9, 9:16.' },
+        size: { type: 'string', description: 'Image 2.5 only: native size/aspect; do not conflict with aspect.' },
+        resolution: { type: 'string', enum: ['1k', '2k', '4k'], description: 'Image 2.5 only: independent resolution, default 1k.' },
+        count: { type: 'integer', minimum: 1, description: 'Image 2.5 image count, default 1. Other models accept only 1.' },
         reference_images: {
           type: 'array',
           items: { type: 'string' },
           description: 'Image URLs for image-to-image.',
         },
       },
+      additionalProperties: false,
       required: ['prompt'],
     },
   },
@@ -127,17 +133,23 @@ const TOOLS = [
     description:
       'Start a video generation. Returns a task_id immediately — video takes ~100s, ' +
       'so poll wanapis_check_task until status is completed. ' +
+      'MiniMax H3 defaults to 4 seconds, 768P, 9:16, fast_mode=false and IR enabled; use resolution instead of quality. ' +
       `Models: ${modelList(VIDEO_MODELS)}`,
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string' },
         model: { type: 'string', enum: Object.keys(VIDEO_MODELS), default: 'seedance-2.0' },
-        quality: { type: 'string', enum: QUALITY_ENUM, default: 'medium' },
-        seconds: { type: 'number', default: 5, description: 'Duration, typically 4-15.' },
-        aspect: { type: 'string', description: 'e.g. 16:9, 9:16, 1:1.' },
-        image_url: { type: 'string', description: 'First-frame image for image-to-video.' },
+        quality: { type: 'string', enum: QUALITY_ENUM, description: 'Legacy models only, default medium. For H3 use resolution.' },
+        seconds: { type: 'number', description: 'Legacy default 5. H3 default 4; integer 4–30, or 4–15 at 2K.' },
+        aspect: { type: 'string', description: 'e.g. 16:9, 9:16, 1:1; H3 alias for ratio.' },
+        ratio: { type: 'string', enum: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], description: 'H3 only; default 9:16.' },
+        resolution: { type: 'string', enum: ['480p', '768P', '1080p', '2K'], description: 'H3 only; default 768P.' },
+        fast_mode: { type: 'boolean', description: 'H3 priority mode, default false; doubles the video fee.' },
+        context_ir_enabled: { type: 'boolean', description: 'H3 IR, default true; adds a per-request fee.' },
+        image_url: { type: 'string', description: 'First-frame image URL. H3 sends one input_reference object.' },
       },
+      additionalProperties: false,
       required: ['prompt'],
     },
   },
@@ -167,22 +179,30 @@ const TOOLS = [
   {
     name: 'wanapis_estimate_cost',
     description:
-      'Estimate what a generation will cost before running it. Prices come from the live ' +
-      'WanAPIs pricing feed, so they match what you will actually be billed.',
+      'Estimate a generation budget using public live pricing and an assumed group multiplier. ' +
+      'This does not determine your key\'s billing route or final charge. Image 2.5 estimates are tier precharges; actual usage can cost more.',
     inputSchema: {
       type: 'object',
       properties: {
         model: { type: 'string' },
-        quality: { type: 'string', enum: QUALITY_ENUM, default: 'medium' },
-        seconds: { type: 'number', description: 'Video only.' },
-        count: { type: 'number', default: 1, description: 'Number of images.' },
+        quality: { type: 'string', enum: [...QUALITY_ENUM, 'xhigh', 'max'], description: 'Image 2.5 native quality (default low); legacy models low/medium/high (default medium); omit for H3.' },
+        resolution: { type: 'string', description: 'Image 2.5: 1k/2k/4k. H3: 480p/768P/1080p/2K.' },
+        seconds: { type: 'number', description: 'Video only; H3 defaults to 4.' },
+        count: { type: 'integer', minimum: 1, description: 'Number of images, default 1.' },
+        aspect: { type: 'string' }, size: { type: 'string' }, ratio: { type: 'string' },
+        reference_images: { type: 'array', items: { type: 'string' }, description: 'Image references can increase actual usage above the tier precharge.' },
+        image_url: { type: 'string', description: 'First-frame image; H3 supports at most one.' },
+        fast_mode: { type: 'boolean', description: 'H3 only, default false.' },
+        context_ir_enabled: { type: 'boolean', description: 'H3 only, default true.' },
+        group_ratio: { type: 'number', minimum: 0, description: 'Budget assumption only; default 1. Does not change the generation group or billing.' },
       },
+      additionalProperties: false,
       required: ['model'],
     },
   },
   {
     name: 'wanapis_list_models',
-    description: 'List available image and video models with pricing and notes.',
+    description: 'List public catalog models with verified MCP adapters, native options and live pricing. Public visibility does not prove your key\'s permissions or operational availability.',
     inputSchema: {
       type: 'object',
       properties: { kind: { type: 'string', enum: ['image', 'video', 'all'], default: 'all' } },
@@ -200,39 +220,12 @@ const fail = (msg) => ({
   isError: true,
 });
 
-/** 价格表按模型名索引，同时带上分辨率档位价 */
-async function pricingIndex() {
-  const data = (await client.pricing())?.data ?? [];
-  const idx = new Map();
-  for (const m of data) if (m?.model_name) idx.set(m.model_name, m);
-  return idx;
-}
-
-function priceFor(entry, { quality, seconds, count }) {
-  if (!entry) return null;
-  const tierKey = { low: '480p', medium: '720p', high: '1080p' };
-  const imgTier = { low: '1K', medium: '2K', high: '4K' };
-
-  const vp = entry.video_pricing;
-  if (vp && seconds > 0) {
-    const perSec = vp[tierKey[quality ?? 'medium']] ?? vp['*'] ?? Object.values(vp)[0];
-    if (perSec > 0) return { amount: perSec * seconds, basis: `${perSec}/s × ${seconds}s` };
-  }
-  const ip = entry.image_pricing;
-  if (ip) {
-    const p = ip[imgTier[quality ?? 'medium']];
-    if (p > 0) return { amount: p * (count ?? 1), basis: `${p} × ${count ?? 1}` };
-  }
-  const base = entry.model_price ?? 0;
-  if (base > 0) {
-    if (seconds > 0) return { amount: base * seconds, basis: `${base}/s × ${seconds}s` };
-    return { amount: base * (count ?? 1), basis: `${base} × ${count ?? 1}` };
-  }
-  return null;
+async function loadCatalog() {
+  return parseCatalog(await client.pricing());
 }
 
 const server = new Server(
-  { name: 'wanapis-mcp', version: '0.1.1' },
+  { name: 'wanapis-mcp', version: '0.1.2' },
   { capabilities: { tools: {} } }
 );
 
@@ -251,9 +244,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const model = a.model ?? 'gpt-image-2';
       const body = buildImageBody(model, {
         prompt: a.prompt,
-        quality: a.quality,
-        aspect: a.aspect,
-        referenceImages: a.reference_images,
+        quality: a.quality, resolution: a.resolution, count: a.count, size: a.size,
+        aspect: a.aspect, referenceImages: a.reference_images,
       });
       const path = submitPath('image', model);
       if (IMAGE_MODELS[model]?.async) {
@@ -293,10 +285,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const model = a.model ?? 'seedance-2.0';
       const body = buildVideoBody(model, {
         prompt: a.prompt,
-        quality: a.quality,
-        seconds: a.seconds ?? 5,
-        aspect: a.aspect,
-        imageUrl: a.image_url,
+        quality: a.quality, seconds: a.seconds, resolution: a.resolution,
+        ratio: a.ratio, aspect: a.aspect, imageUrl: a.image_url,
+        fast_mode: a.fast_mode, context_ir_enabled: a.context_ir_enabled,
       });
       const { taskId, raw } = await client.submit(submitPath('video', model), body);
       if (!taskId) return fail(`no task_id in response: ${JSON.stringify(raw).slice(0, 300)}`);
@@ -369,29 +360,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     if (name === 'wanapis_estimate_cost') {
-      const idx = await pricingIndex();
-      const p = priceFor(idx.get(a.model), a);
-      if (!p) return ok({ model: a.model, estimate: null, note: 'no price configured for this model' });
-      return ok({ model: a.model, estimate: Number(p.amount.toFixed(4)), basis: p.basis });
+      const options = { ...a, imageUrl: a.image_url, referenceImages: a.reference_images };
+      normalizeEstimateOptions(a.model, options);
+      return ok(estimateCost(await loadCatalog(), a.model, options));
     }
 
     if (name === 'wanapis_list_models') {
-      const idx = await pricingIndex();
-      const kind = a.kind ?? 'all';
-      const rows = [];
-      const push = (id, spec, k) => {
-        const e = idx.get(id);
-        rows.push({
-          model: id,
-          kind: k,
-          note: spec.note,
-          price: e?.model_price ?? null,
-          tiers: e?.video_pricing ?? e?.image_pricing ?? null,
-        });
-      };
-      if (kind !== 'image') for (const [id, s] of Object.entries(VIDEO_MODELS)) push(id, s, 'video');
-      if (kind !== 'video') for (const [id, s] of Object.entries(IMAGE_MODELS)) push(id, s, 'image');
-      return ok({ models: rows });
+      const catalog = await loadCatalog();
+      return ok({
+        models: listCatalogModels(catalog, a.kind ?? 'all'), pricing_version: catalog.pricing_version,
+        group_ratio: catalog.group_ratio,
+        note: 'Public catalog intersected with verified adapters; key permissions and channel availability are checked by the gateway when submitting.',
+      });
     }
 
     return fail(`unknown tool: ${name}`);

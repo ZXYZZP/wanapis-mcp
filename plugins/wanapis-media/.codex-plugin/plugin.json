@@ -1,7 +1,7 @@
 {
   "name": "wanapis-media",
-  "version": "0.1.0",
-  "description": "Generate images and video from inside Codex — Seedance, Veo, Kling, Midjourney, Seedream, Nano Banana and GPT-Image, through one WanAPIs key, with the cost shown before you run.",
+  "version": "0.1.2",
+  "description": "Generate images and video from inside Codex — including GPT Image 2.5 and MiniMax H3, with verified model parameters, async results and public-price budget estimates through one WanAPIs key.",
   "author": {
     "name": "WanAPIs",
     "email": "support@wanapis.com",
@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "WanAPIs Media",
     "shortDescription": "Generate images and video with cost estimates",
-    "longDescription": "Create images and video without leaving Codex. Every major model is reachable through a single WanAPIs key — Seedance, Veo, Kling, Midjourney, Seedream, Nano Banana and GPT-Image. You say low, medium or high; the plugin translates that into whatever each provider actually calls it. Because generation is billed per call, it estimates the cost from the live pricing feed before running, and reports what you were actually charged afterwards.",
+    "longDescription": "Create images and video through verified WanAPIs adapters, including GPT Image 2.5 with independent quality and resolution and MiniMax H3 with native duration, priority and IR options. The model list intersects the current public catalog with supported adapters. Budget estimates use public pricing and an assumed group multiplier; actual image usage can cost more. Completed tasks report the gateway's billed amount.",
     "developerName": "WanAPIs",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

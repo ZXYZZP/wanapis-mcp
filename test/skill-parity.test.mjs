@@ -5,7 +5,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { VIDEO_MODELS, IMAGE_MODELS } from '../src/models.js';
+import { VIDEO_MODELS, IMAGE_MODELS, QUALITY, buildVideoBody, buildImageBody } from '../src/models.js';
+import { parseCatalog, listCatalogModels } from '../src/catalog.js';
+import { estimateCost } from '../src/pricing.js';
+import * as skill from '../plugins/wanapis-media/skills/wanapis-media/scripts/wanapis.mjs';
+import catalogFixture from './helpers/catalog.cjs';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const script = readFileSync(new URL('../plugins/wanapis-media/skills/wanapis-media/scripts/wanapis.mjs', import.meta.url), 'utf8');
 
@@ -25,9 +30,8 @@ test('skill 与 MCP 的图片模型列表一致', () => {
 });
 
 test('skill 与 MCP 的画质映射表一致', () => {
-  assert.deepEqual(keysOf('QUALITY'),
-    [...new Set([...Object.values(VIDEO_MODELS), ...Object.values(IMAGE_MODELS)]
-      .map((s) => s.family))].filter((f) => f !== 'midjourney').sort());
+  assert.deepEqual(keysOf('QUALITY'), Object.keys(QUALITY).sort());
+  assert.deepEqual(skill.QUALITY, QUALITY);
 });
 
 test('SKILL.md 有合法的 frontmatter', () => {
@@ -89,5 +93,70 @@ test('插件版本与 npm 包版本没有意外脱节', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const m = JSON.parse(readFileSync(new URL('../plugins/wanapis-media/.codex-plugin/plugin.json', import.meta.url), 'utf8'));
   assert.match(m.version, /^\d+\.\d+\.\d+$/);
-  assert.ok(pkg.version, 'package.json 缺 version');
+  assert.equal(m.version, pkg.version, 'plugin and MCP candidate versions must match');
+});
+
+test('generated standalone helpers match the canonical source', () => {
+  execFileSync(process.execPath, ['scripts/sync-skill.mjs', '--check'], { cwd: new URL('..', import.meta.url) });
+});
+
+test('MCP and standalone CLI use identical native requests, defaults and estimates', () => {
+  const catalog = parseCatalog(catalogFixture);
+  for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
+    for (const options of [{}, { quality: 'max', resolution: '4k', count: 2, aspect: '16:9', referenceImages: ['https://cdn.example/a.png'] }]) {
+      assert.deepEqual(skill.buildImageBody(model, { prompt: 'p', ...options }), buildImageBody(model, { prompt: 'p', ...options }));
+      assert.deepEqual(skill.estimateCost(catalog, model, options), estimateCost(catalog, model, options));
+    }
+  }
+  for (const options of [{}, { context_ir_enabled: false, imageUrl: 'https://cdn.example/a.png' }, { seconds: 16, fast_mode: true, group_ratio: 0.5 }]) {
+    assert.deepEqual(skill.buildVideoBody('minimax-h3', { prompt: 'p', ...options }), buildVideoBody('minimax-h3', { prompt: 'p', ...options }));
+    assert.deepEqual(skill.estimateCost(catalog, 'minimax-h3', options), estimateCost(catalog, 'minimax-h3', options));
+  }
+  assert.deepEqual(skill.listCatalogModels(catalog), listCatalogModels(catalog));
+});
+
+test('standalone CLI parses false explicitly and rejects invalid booleans and numbers', () => {
+  assert.deepEqual(skill.flagOptions({ 'fast-mode': 'false', 'context-ir-enabled': 'false', seconds: '4' }), {
+    seconds: 4, fast_mode: false, context_ir_enabled: false,
+  });
+  assert.throws(() => skill.flagOptions({ 'fast-mode': '0' }), /true or false/);
+  assert.throws(() => skill.flagOptions({ seconds: 'NaN' }), /finite number/);
+  assert.throws(() => skill.buildVideoBody('minimax-h3', { prompt: 'p', ...skill.flagOptions({ seconds: '4.5' }) }), /positive integer/);
+});
+
+test('standalone CLI extracts the nested async image envelope', () => {
+  const payload = { data: { data: { data: { result: { images: [{ url: ['https://cdn.example/a.png'] }] } } } } };
+  assert.deepEqual(skill.extractMediaUrls(payload), ['https://cdn.example/a.png']);
+});
+
+function cli(args, expectedBody) {
+  const run = spawnSync(process.execPath, ['--require', './test/helpers/cli-gateway.cjs',
+    'plugins/wanapis-media/skills/wanapis-media/scripts/wanapis.mjs', ...args], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10000,
+    env: { PATH: process.env.PATH, WANAPIS_API_KEY: 'sk-offline-cli', WANAPIS_BASE_URL: 'https://offline.example',
+      ...(expectedBody ? { EXPECT_BODY: JSON.stringify(expectedBody) } : {}) },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  return JSON.parse(run.stdout);
+}
+
+test('standalone CLI executes Image 2.5 submission, poll and nested extraction', () => {
+  const output = cli(['image', 'offline fixture', '--model', 'gpt-image-2.5-flare', '--quality', 'max', '--resolution', '2k', '--count', '2', '--reference-image', 'https://cdn.example/a.png'],
+    buildImageBody('gpt-image-2.5-flare', { prompt: 'offline fixture', quality: 'max', resolution: '2k', count: 2, referenceImages: ['https://cdn.example/a.png'] }));
+  assert.deepEqual(output.media, ['https://cdn.example/image.png']);
+});
+
+test('standalone CLI executes H3 with false IR and exact native request', () => {
+  const output = cli(['video', 'offline fixture', '--model', 'minimax-h3', '--context-ir-enabled', 'false'],
+    buildVideoBody('minimax-h3', { prompt: 'offline fixture', context_ir_enabled: false }));
+  assert.equal(output.status, 'success');
+  assert.equal(output.chargedCny, 0.468);
+});
+
+test('standalone CLI catalog and estimate use public metadata and native defaults', () => {
+  const output = cli(['estimate', '--model', 'minimax-h3', '--seconds', '16', '--fast-mode', 'true']);
+  assert.equal(output.estimateCny, 7.553);
+  const rows = cli(['models']);
+  assert.equal(rows.length, 5);
+  assert.ok(!rows.some((r) => r.model === 'minimax-h3-max'));
 });
