@@ -1,6 +1,6 @@
 {
   "name": "@wanapis/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for WanAPIs image and video generation. One key, every model.",
   "type": "module",
   "bin": {
@@ -42,7 +42,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.23.8"
   },
   "license": "MIT"

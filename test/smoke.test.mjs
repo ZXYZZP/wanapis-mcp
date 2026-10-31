@@ -40,6 +40,23 @@ test('Midjourney 一次四张全部取到', () => {
   assert.equal(extractMediaUrls(UPSTREAM_IMAGES).length, 4);
 });
 
+test('异步图片保留的完整上游信封：读取 data.data.data.result 并去重', () => {
+  const payload = {
+    code: 'success',
+    data: {
+      task_id: 'image-offline-1', status: 'SUCCESS', progress: '100%',
+      data: {
+        code: 200,
+        data: {
+          status: 'completed',
+          result: { images: [{ url: ['i1', 'i2'] }, { url: ['i2', 'i3'] }] },
+        },
+      },
+    },
+  };
+  assert.deepEqual(extractMediaUrls(payload), ['i1', 'i2', 'i3']);
+});
+
 test('未完成的任务不返回任何 URL', () => {
   assert.deepEqual(extractMediaUrls(PENDING), []);
 });

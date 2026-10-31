@@ -20,6 +20,7 @@
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -71,11 +72,15 @@ function startImageJob(path, body) {
     .catch((e) => { rec.status = 'error'; rec.error = String(e?.message ?? e); });
   jobs.set(id, rec);
 
-  // 顺手清掉过期作业，免得长时间运行的 server 无限攒结果。
-  for (const [k, v] of jobs) {
-    if (v.status !== 'running' && Date.now() - v.startedAt > JOB_TTL_MS) jobs.delete(k);
-  }
+  pruneJobs();
   return { id, rec };
+}
+
+// 完成结果保留到 TTL，允许先查状态再下载；查询时也清理，避免过期结果仍可读。
+function pruneJobs() {
+  for (const [id, rec] of jobs) {
+    if (rec.status !== 'running' && Date.now() - rec.startedAt > JOB_TTL_MS) jobs.delete(id);
+  }
 }
 
 /** 从同步生图响应里取 URL;拿不到 URL(返回 b64)时不塞进上下文。 */
@@ -185,6 +190,10 @@ const TOOLS = [
   },
 ];
 
+// 低层 Server 只验证 tools/call 信封，不会执行工具声明的 inputSchema。
+const schemaValidator = new AjvJsonSchemaValidator();
+const inputValidators = new Map(TOOLS.map((tool) => [tool.name, schemaValidator.getValidator(tool.inputSchema)]));
+
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 const fail = (msg) => ({
   content: [{ type: 'text', text: JSON.stringify({ error: String(msg) }, null, 2) }],
@@ -223,7 +232,7 @@ function priceFor(entry, { quality, seconds, count }) {
 }
 
 const server = new Server(
-  { name: 'wanapis-mcp', version: '0.1.0' },
+  { name: 'wanapis-mcp', version: '0.1.1' },
   { capabilities: { tools: {} } }
 );
 
@@ -232,6 +241,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: a = {} } = req.params;
   try {
+    const validate = inputValidators.get(name);
+    if (!validate) return fail(`unknown tool: ${name}`);
+    const validation = validate(a);
+    if (!validation.valid) return fail(`invalid arguments: ${validation.errorMessage}`);
+    pruneJobs();
+
     if (name === 'wanapis_generate_image') {
       const model = a.model ?? 'gpt-image-2';
       const body = buildImageBody(model, {
@@ -322,7 +337,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             catch (e) { saved.push({ url, error: String(e?.message ?? e) }); }
           }
         }
-        jobs.delete(a.task_id);
         return ok({ status: 'success', images: urls, saved });
       }
 
