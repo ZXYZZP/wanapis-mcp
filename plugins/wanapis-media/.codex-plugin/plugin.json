@@ -1,7 +1,7 @@
 {
   "name": "wanapis-media",
-  "version": "0.1.2",
-  "description": "Generate images and video from inside Codex — including GPT Image 2.5 and MiniMax H3, with verified model parameters, async results and public-price budget estimates through one WanAPIs key.",
+  "version": "0.1.3",
+  "description": "Generate images and video from inside Codex \u2014 including GPT Image 2.5, MiniMax H3 with multi-reference and 2K regeneration, and Seedance with local-file upload, verified model parameters, async results and public-price budget estimates through one WanAPIs key.",
   "author": {
     "name": "WanAPIs",
     "email": "support@wanapis.com",
@@ -24,11 +24,14 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "WanAPIs Media",
-    "shortDescription": "Generate images and video with cost estimates",
-    "longDescription": "Create images and video through verified WanAPIs adapters, including GPT Image 2.5 with independent quality and resolution and MiniMax H3 with native duration, priority and IR options. The model list intersects the current public catalog with supported adapters. Budget estimates use public pricing and an assumed group multiplier; actual image usage can cost more. Completed tasks report the gateway's billed amount.",
+    "shortDescription": "Generate and edit images and video with cost estimates",
+    "longDescription": "Create images and video through verified WanAPIs adapters, including GPT Image 2.5 with independent quality and resolution, MiniMax H3 with multi-image/frame/video/audio references, upload, 2K regeneration, standalone prompt optimization, priority and IR options, and Seedance with local-file upload and reference media. The model list intersects the current public catalog with supported adapters. Budget estimates use public pricing and an assumed group multiplier; H3 reference media is shown as a reservation upper bound and pending settlement is not a final charge. Actual image usage can cost more. Completed tasks report billing status and the gateway's charged amount when settled.",
     "developerName": "WanAPIs",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://wanapis.com/agents",
     "privacyPolicyURL": "https://wanapis.com/legal/privacy",
     "termsOfServiceURL": "https://wanapis.com/legal/terms",

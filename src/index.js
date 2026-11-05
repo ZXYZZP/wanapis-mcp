@@ -31,6 +31,8 @@ import {
   VIDEO_MODELS,
   buildImageBody,
   buildVideoBody,
+  buildRegenerationBody,
+  buildPromptOptimizationBody,
   submitPath,
 } from './models.js';
 import { parseCatalog, listCatalogModels } from './catalog.js';
@@ -40,6 +42,54 @@ const client = new WanApisClient({
   apiKey: process.env.WANAPIS_API_KEY,
   baseUrl: process.env.WANAPIS_BASE_URL,
 });
+
+const isRemoteMedia = (value) => /^(https?:|data:)/i.test(value);
+
+/**
+ * A media string may be a public URL/data URI, an existing platform asset, or a
+ * local file. Local files are uploaded once and replaced with an opaque asset
+ * ID; subsequent uploads bind to the first asset so one request uses one
+ * credential. The MCP server never forwards a local path to the gateway.
+ */
+async function resolveMediaValue(value, mediaType, state) {
+  if (typeof value !== 'string' || !value) throw new Error('media must be a non-empty string');
+  if (value.startsWith('asset_')) {
+    state.binding ??= value;
+    return value;
+  }
+  if (isRemoteMedia(value)) return value;
+  const asset = await client.uploadAsset(value, mediaType, state.binding);
+  state.binding ??= asset.id;
+  return asset.id;
+}
+
+async function resolveMediaList(values, mediaType, state) {
+  if (values === undefined) return [];
+  if (!Array.isArray(values)) throw new Error('media list must be an array');
+  const out = [];
+  for (const value of values) out.push(await resolveMediaValue(value, mediaType, state));
+  return out;
+}
+
+/**
+ * Seedance upstreams only take public URLs. A local file is uploaded to the
+ * gateway's temporary media relay once and replaced with its signed URL; the
+ * MCP server never forwards a local path.
+ */
+async function resolveSeedanceMediaValue(value, mediaType, model) {
+  if (typeof value !== 'string' || !value) throw new Error('media must be a non-empty string');
+  if (value.startsWith('asset_')) throw new Error('Seedance does not accept H3 asset IDs; use a URL or a local file');
+  if (isRemoteMedia(value)) return value;
+  return (await client.uploadTemporaryMedia(value, mediaType, model)).url;
+}
+
+async function resolveSeedanceMediaList(values, mediaType, model) {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values)) throw new Error('media list must be an array');
+  const out = [];
+  for (const value of values) out.push(await resolveSeedanceMediaValue(value, mediaType, model));
+  return out;
+}
 
 const QUALITY_ENUM = ['low', 'medium', 'high'];
 
@@ -134,6 +184,8 @@ const TOOLS = [
       'Start a video generation. Returns a task_id immediately — video takes ~100s, ' +
       'so poll wanapis_check_task until status is completed. ' +
       'MiniMax H3 defaults to 4 seconds, 768P, 9:16, fast_mode=false and IR enabled; use resolution instead of quality. ' +
+      'H3 accepts up to 9 images (reference/first/last frame), 3 reference videos and 3 audio clips; ' +
+      'local file paths are uploaded automatically (H3 as opaque assets, Seedance as a temporary signed URL). ' +
       `Models: ${modelList(VIDEO_MODELS)}`,
     inputSchema: {
       type: 'object',
@@ -147,7 +199,72 @@ const TOOLS = [
         resolution: { type: 'string', enum: ['480p', '768P', '1080p', '2K'], description: 'H3 only; default 768P.' },
         fast_mode: { type: 'boolean', description: 'H3 priority mode, default false; doubles the video fee.' },
         context_ir_enabled: { type: 'boolean', description: 'H3 IR, default true; adds a per-request fee.' },
-        image_url: { type: 'string', description: 'First-frame image URL. H3 sends one input_reference object.' },
+        generate_audio: { type: 'boolean', description: 'Seedance: generate a synchronized audio track (upstream default true).' },
+        return_last_frame: { type: 'boolean', description: 'Seedance: include the last frame URL in the result.' },
+        seed: { type: 'integer', minimum: 0, description: 'Seedance: randomness seed.' },
+        image_url: { type: 'string', description: 'Legacy single opening-frame/reference image URL. Use reference_images for multiple inputs.' },
+        reference_images: { type: 'array', items: { type: 'string' }, description: 'H3/Seedance reference images. Both accept URL/data/local path; H3 also accepts asset_id. Up to 9 images including frames.' },
+        first_frame: { type: 'string', description: 'H3/Seedance explicit first-frame image (URL/data/local path).' },
+        last_frame: { type: 'string', description: 'H3/Seedance explicit last-frame image (URL/data/local path).' },
+        reference_videos: { type: 'array', items: { type: 'string' }, description: 'H3/Seedance reference videos (URL/local path; H3 also accepts data/asset_id). Up to 3.' },
+        reference_audio: { type: 'array', items: { type: 'string' }, description: 'H3/Seedance reference audio (URL/local path; H3 also accepts data/asset_id). Up to 3.' },
+      },
+      additionalProperties: false,
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'wanapis_upload_media',
+    description:
+      'Upload one local image, video or audio file for H3 or Seedance. ' +
+      'H3 returns an opaque asset_id that can be reused; Seedance returns a temporary signed public URL (valid for a few hours). ' +
+      'Uploading is free and does not create a generation task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Local file path.' },
+        media_type: { type: 'string', enum: ['image', 'video', 'audio'] },
+        model: { type: 'string', description: 'Target model; default minimax-h3. Use a seedance-* model to get a temporary public URL instead of asset_id.' },
+        binding_asset_id: { type: 'string', description: 'H3 only: optional existing asset_id whose channel/credential this upload should reuse.' },
+      },
+      additionalProperties: false,
+      required: ['path', 'media_type'],
+    },
+  },
+  {
+    name: 'wanapis_regenerate_video',
+    description:
+      'Create a 2K regeneration from one of your successful 768P MiniMax H3 source tasks. ' +
+      'mode=source uses the source task directly when the account/channel enables it. ' +
+      'mode=content requires the original final prompt and every original reference material, exactly as submitted; ' +
+      'local paths are uploaded automatically. Regeneration is a new paid task; the original generation remains billed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_task_id: { type: 'string', description: 'Your public WanAPIs task ID of a successful 768P minimax-h3 original.' },
+        mode: { type: 'string', enum: ['source', 'content'], default: 'content' },
+        prompt: { type: 'string', description: 'content mode only: the original final prompt.' },
+        reference_images: { type: 'array', items: { type: 'string' }, description: 'content mode: the original reference images.' },
+        first_frame: { type: 'string' }, last_frame: { type: 'string' },
+        reference_videos: { type: 'array', items: { type: 'string' } },
+        reference_audio: { type: 'array', items: { type: 'string' } },
+      },
+      additionalProperties: false,
+      required: ['source_task_id'],
+    },
+  },
+  {
+    name: 'wanapis_optimize_prompt',
+    description:
+      'Create a standalone H3 prompt-optimization task. The result is text, not a video; ' +
+      'poll wanapis_check_task with kind="prompt". It is a separate paid request. ' +
+      'When using the returned prompt for a video, set context_ir_enabled=false to avoid a second IR charge.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string' },
+        seconds: { type: 'number', description: 'Planned video duration 4–15, default 4.' },
+        ratio: { type: 'string', enum: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], description: 'Planned video ratio, default 9:16.' },
       },
       additionalProperties: false,
       required: ['prompt'],
@@ -156,16 +273,17 @@ const TOOLS = [
   {
     name: 'wanapis_check_task',
     description:
-      'Check an async generation task. Returns status, progress, the real cost once billed, ' +
-      'and media URLs when done. ' +
+      'Check an async generation task. Returns status, progress, billing (reserved/charged/refunded CNY), ' +
+      'the real cost once settled, and media URLs or prompt text when done. ' +
       'IMPORTANT: media URLs require your WanAPIs key — opening one in a browser returns 401, ' +
       'so do not hand the raw URL to a user. Pass save_dir to download the files locally instead. ' +
+      'H3 billing may remain pending_usage after the result succeeds; the reserved amount is not the final charge. ' +
       'URLs also stop working once the upstream result expires (~24h).',
     inputSchema: {
       type: 'object',
       properties: {
         task_id: { type: 'string' },
-        kind: { type: 'string', enum: ['image', 'video'], default: 'video' },
+        kind: { type: 'string', enum: ['image', 'video', 'prompt'], default: 'video' },
         save_dir: {
           type: 'string',
           description:
@@ -180,7 +298,8 @@ const TOOLS = [
     name: 'wanapis_estimate_cost',
     description:
       'Estimate a generation budget using public live pricing and an assumed group multiplier. ' +
-      'This does not determine your key\'s billing route or final charge. Image 2.5 estimates are tier precharges; actual usage can cost more.',
+      'This does not determine your key\'s billing route or final charge. Image 2.5 estimates are tier precharges. ' +
+      'H3 with reference media returns a reservation upper bound (reference-video seconds are reserved before verified usage).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -190,8 +309,11 @@ const TOOLS = [
         seconds: { type: 'number', description: 'Video only; H3 defaults to 4.' },
         count: { type: 'integer', minimum: 1, description: 'Number of images, default 1.' },
         aspect: { type: 'string' }, size: { type: 'string' }, ratio: { type: 'string' },
-        reference_images: { type: 'array', items: { type: 'string' }, description: 'Image references can increase actual usage above the tier precharge.' },
-        image_url: { type: 'string', description: 'First-frame image; H3 supports at most one.' },
+        reference_images: { type: 'array', items: { type: 'string' }, description: 'H3 images/frames for the reservation estimate; URLs or asset IDs. Image 2.5 references can increase actual usage.' },
+        first_frame: { type: 'string' }, last_frame: { type: 'string' },
+        reference_videos: { type: 'array', items: { type: 'string' }, description: 'H3 reference videos; the estimate reserves the protocol input upper bound.' },
+        reference_audio: { type: 'array', items: { type: 'string' }, description: 'H3 reference audio; no material fee.' },
+        image_url: { type: 'string', description: 'Legacy single image; H3 sends one input_reference object.' },
         fast_mode: { type: 'boolean', description: 'H3 only, default false.' },
         context_ir_enabled: { type: 'boolean', description: 'H3 only, default true.' },
         group_ratio: { type: 'number', minimum: 0, description: 'Budget assumption only; default 1. Does not change the generation group or billing.' },
@@ -225,7 +347,7 @@ async function loadCatalog() {
 }
 
 const server = new Server(
-  { name: 'wanapis-mcp', version: '0.1.2' },
+  { name: 'wanapis-mcp', version: '0.1.3' },
   { capabilities: { tools: {} } }
 );
 
@@ -283,19 +405,133 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     if (name === 'wanapis_generate_video') {
       const model = a.model ?? 'seedance-2.0';
-      const body = buildVideoBody(model, {
+      let options = {
         prompt: a.prompt,
         quality: a.quality, seconds: a.seconds, resolution: a.resolution,
         ratio: a.ratio, aspect: a.aspect, imageUrl: a.image_url,
         fast_mode: a.fast_mode, context_ir_enabled: a.context_ir_enabled,
-      });
+      };
+      if (VIDEO_MODELS[model]?.family === 'h3') {
+        const state = {};
+        const referenceImages = await resolveMediaList(a.reference_images, 'image', state);
+        const firstFrame = a.first_frame === undefined ? undefined : await resolveMediaValue(a.first_frame, 'image', state);
+        const lastFrame = a.last_frame === undefined ? undefined : await resolveMediaValue(a.last_frame, 'image', state);
+        const referenceVideos = await resolveMediaList(a.reference_videos, 'video', state);
+        const referenceAudio = await resolveMediaList(a.reference_audio, 'audio', state);
+        let imageUrl = a.image_url;
+        if (imageUrl !== undefined) {
+          if (imageUrl.startsWith('asset_')) {
+            referenceImages.unshift(imageUrl);
+            imageUrl = undefined;
+          } else if (!isRemoteMedia(imageUrl)) {
+            referenceImages.unshift(await resolveMediaValue(imageUrl, 'image', state));
+            imageUrl = undefined;
+          }
+        }
+        options = {
+          ...options, imageUrl,
+          ...(referenceImages.length ? { referenceImages } : {}),
+          ...(firstFrame ? { firstFrame } : {}),
+          ...(lastFrame ? { lastFrame } : {}),
+          ...(referenceVideos.length ? { referenceVideos } : {}),
+          ...(referenceAudio.length ? { referenceAudio } : {}),
+        };
+      } else if (model.startsWith('seedance-')) {
+        const referenceImages = await resolveSeedanceMediaList(a.reference_images, 'image', model);
+        const referenceVideos = await resolveSeedanceMediaList(a.reference_videos, 'video', model);
+        const referenceAudio = await resolveSeedanceMediaList(a.reference_audio, 'audio', model);
+        const firstFrame = a.first_frame === undefined ? undefined : await resolveSeedanceMediaValue(a.first_frame, 'image', model);
+        const lastFrame = a.last_frame === undefined ? undefined : await resolveSeedanceMediaValue(a.last_frame, 'image', model);
+        const imageUrl = a.image_url === undefined ? undefined : await resolveSeedanceMediaValue(a.image_url, 'image', model);
+        options = {
+          ...options,
+          imageUrl,
+          ...(referenceImages !== undefined ? { referenceImages } : {}),
+          ...(firstFrame !== undefined ? { firstFrame } : {}),
+          ...(lastFrame !== undefined ? { lastFrame } : {}),
+          ...(referenceVideos !== undefined ? { referenceVideos } : {}),
+          ...(referenceAudio !== undefined ? { referenceAudio } : {}),
+          ...(a.generate_audio !== undefined ? { generateAudio: a.generate_audio } : {}),
+          ...(a.return_last_frame !== undefined ? { returnLastFrame: a.return_last_frame } : {}),
+          ...(a.seed !== undefined ? { seed: a.seed } : {}),
+        };
+      }
+      const body = buildVideoBody(model, options);
       const { taskId, raw } = await client.submit(submitPath('video', model), body);
       if (!taskId) return fail(`no task_id in response: ${JSON.stringify(raw).slice(0, 300)}`);
       return ok({
         task_id: taskId,
         status: 'submitted',
-        note: 'video usually takes 60-150s',
+        note: VIDEO_MODELS[model]?.family === 'h3'
+          ? 'H3 reserves the maximum input allowance before submission; successful usage settles lower and refunds the difference. Reference-video metering may keep billing pending_usage.'
+          : 'video usually takes 60-150s',
         next: 'poll wanapis_check_task with kind="video"',
+      });
+    }
+
+    if (name === 'wanapis_upload_media') {
+      const targetModel = a.model ?? 'minimax-h3';
+      if (targetModel === 'minimax-h3') {
+        const asset = await client.uploadAsset(a.path, a.media_type, a.binding_asset_id);
+        return ok({
+          asset_id: asset.id,
+          media_type: asset.media_type,
+          status: asset.status,
+          bytes: asset.bytes,
+          note: 'Reuse this asset_id in reference_images/reference_videos/reference_audio. Uploading is free.',
+        });
+      }
+      if (targetModel.startsWith('seedance-')) {
+        if (a.binding_asset_id) return fail('binding_asset_id is H3-only');
+        const media = await client.uploadTemporaryMedia(a.path, a.media_type, targetModel);
+        return ok({
+          url: media.url,
+          media_type: media.media_type,
+          bytes: media.bytes,
+          expires_at: media.expires_at,
+          note: 'Pass this URL in reference_images/reference_videos/reference_audio. It expires automatically; upload again for a new generation after expiry.',
+        });
+      }
+      return fail('model must be minimax-h3 or a seedance-* model');
+    }
+
+    if (name === 'wanapis_regenerate_video') {
+      const state = {};
+      const referenceImages = await resolveMediaList(a.reference_images, 'image', state);
+      const firstFrame = a.first_frame === undefined ? undefined : await resolveMediaValue(a.first_frame, 'image', state);
+      const lastFrame = a.last_frame === undefined ? undefined : await resolveMediaValue(a.last_frame, 'image', state);
+      const referenceVideos = await resolveMediaList(a.reference_videos, 'video', state);
+      const referenceAudio = await resolveMediaList(a.reference_audio, 'audio', state);
+      const body = buildRegenerationBody({
+        mode: a.mode ?? 'content',
+        prompt: a.prompt,
+        ...(referenceImages.length ? { referenceImages } : {}),
+        ...(firstFrame ? { firstFrame } : {}),
+        ...(lastFrame ? { lastFrame } : {}),
+        ...(referenceVideos.length ? { referenceVideos } : {}),
+        ...(referenceAudio.length ? { referenceAudio } : {}),
+      });
+      const { taskId, raw } = await client.submitRegeneration(a.source_task_id, body);
+      if (!taskId) return fail(`no task_id in response: ${JSON.stringify(raw).slice(0, 300)}`);
+      return ok({
+        task_id: taskId,
+        status: 'submitted',
+        mode: a.mode ?? 'content',
+        note: 'Regeneration is a new paid 2K task; the original generation remains billed. Content mode requires the original final prompt and every original reference material. Billing may remain pending_usage until usage is verified.',
+        next: 'poll wanapis_check_task with kind="video"',
+      });
+    }
+
+    if (name === 'wanapis_optimize_prompt') {
+      const body = buildPromptOptimizationBody({ prompt: a.prompt, seconds: a.seconds, ratio: a.ratio });
+      const { taskId, raw } = await client.submitPromptOptimization(body);
+      if (!taskId) return fail(`no task_id in response: ${JSON.stringify(raw).slice(0, 300)}`);
+      return ok({
+        task_id: taskId,
+        status: 'submitted',
+        object: 'prompt_optimization',
+        note: 'Text task, not a video. Poll wanapis_check_task with kind="prompt". This is a separate paid request.',
+        next: 'poll wanapis_check_task with kind="prompt"',
       });
     }
 
@@ -331,6 +567,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return ok({ status: 'success', images: urls, saved });
       }
 
+      if (a.kind === 'prompt') {
+        const payload = await client.fetchTask('prompt', a.task_id);
+        const st = taskStatus(payload);
+        return ok({
+          ...st,
+          text: payload?.result?.text ?? st.text ?? null,
+          note: st.billing?.status === 'pending_usage'
+            ? 'The prompt text is available, but billing is still awaiting verified usage.'
+            : undefined,
+        });
+      }
+
       const payload = await client.fetchTask(a.kind ?? 'video', a.task_id);
       const st = taskStatus(payload);
       const urls = extractMediaUrls(payload);
@@ -360,7 +608,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     if (name === 'wanapis_estimate_cost') {
-      const options = { ...a, imageUrl: a.image_url, referenceImages: a.reference_images };
+      const options = {
+        ...a,
+        imageUrl: a.image_url,
+        referenceImages: a.reference_images,
+        firstFrame: a.first_frame,
+        lastFrame: a.last_frame,
+        referenceVideos: a.reference_videos,
+        referenceAudio: a.reference_audio,
+      };
       normalizeEstimateOptions(a.model, options);
       return ok(estimateCost(await loadCatalog(), a.model, options));
     }

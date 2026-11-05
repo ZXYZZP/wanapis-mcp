@@ -114,7 +114,7 @@ test('每个模型都有 family 且 QUALITY 表里能查到', () => {
 });
 
 // ── MCP 协议握手(仍不发网络请求) ────────────────────────────────
-test('server 能完成 initialize 并注册 5 个工具', async () => {
+test('server 能完成 initialize 并注册 8 个工具', async () => {
   const child = spawn(process.execPath, ['src/index.js'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: { ...process.env, WANAPIS_API_KEY: 'sk-dummy-for-offline-test' },
@@ -138,7 +138,11 @@ test('server 能完成 initialize 并注册 5 个工具', async () => {
 
   assert.equal(seen.get(1)?.result?.serverInfo?.name, 'wanapis-mcp');
   const tools = seen.get(2)?.result?.tools ?? [];
-  assert.equal(tools.length, 5);
+  assert.equal(tools.length, 8);
+  assert.deepEqual(tools.map((t) => t.name).sort(), [
+    'wanapis_check_task', 'wanapis_estimate_cost', 'wanapis_generate_image', 'wanapis_generate_video',
+    'wanapis_list_models', 'wanapis_optimize_prompt', 'wanapis_regenerate_video', 'wanapis_upload_media',
+  ].sort());
   for (const t of tools) {
     assert.ok(t.description?.length > 20, `${t.name} 描述过短`);
     assert.equal(t.inputSchema.type, 'object');

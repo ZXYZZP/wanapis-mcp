@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +127,178 @@ test('valid video input is submitted once with existing defaults', async (t) => 
   assert.deepEqual(JSON.parse(server.requests[0].body), {
     model: 'seedance-2.0', prompt: 'a quiet landscape', resolution: '720p', duration: 5,
   });
+});
+
+test('H3 advanced media builds one typed content request with frames and references', async (t) => {
+  const server = await startServer(t);
+  const result = await server.call('wanapis_generate_video', {
+    model: 'minimax-h3', prompt: 'scene', resolution: '768P', seconds: 4, ratio: '16:9',
+    context_ir_enabled: false,
+    reference_images: ['https://cdn.example/r1.png', 'https://cdn.example/r2.png'],
+    first_frame: 'https://cdn.example/first.png',
+    last_frame: 'https://cdn.example/last.png',
+    reference_videos: ['https://cdn.example/ref.mp4'],
+    reference_audio: ['https://cdn.example/ref.mp3'],
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.task_id, 'video-offline-1');
+  const body = JSON.parse(server.requests[0].body);
+  assert.equal(body.prompt, undefined);
+  assert.equal(body.input_reference, undefined);
+  assert.deepEqual(body.content.map((item) => [item.type, item.role]), [
+    ['text', undefined],
+    ['image_url', 'first_frame'], ['image_url', 'last_frame'],
+    ['image_url', 'reference_image'], ['image_url', 'reference_image'],
+    ['video_url', 'reference_video'], ['audio_url', 'reference_audio'],
+  ]);
+  assert.deepEqual(body.content[1].image_url, { url: 'https://cdn.example/first.png' });
+});
+
+test('H3 local media is uploaded to an opaque asset before one generation submit', async (t) => {
+  const server = await startServer(t);
+  const dir = await mkdtemp(path.join(tmpdir(), 'wanapis-mcp-upload-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'reference.png');
+  await writeFile(file, Buffer.from('offline image bytes'));
+  const result = await server.call('wanapis_generate_video', {
+    model: 'minimax-h3', prompt: 'scene', context_ir_enabled: false, reference_images: [file],
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(server.requests.length, 2);
+  assert.equal(server.requests[0].path, '/v1/videos/assets');
+  assert.equal(server.requests[0].body.model, 'minimax-h3');
+  assert.equal(server.requests[0].body.media_type, 'image');
+  assert.equal(server.requests[1].path, '/v1/video/generations');
+  const body = JSON.parse(server.requests[1].body);
+  assert.deepEqual(body.content[1].image_url, { asset_id: 'asset_offline_1' });
+  assert.equal(JSON.stringify(body).includes(file), false);
+});
+
+test('Seedance local media is uploaded to a temporary public URL before one submit', async (t) => {
+  const server = await startServer(t);
+  const dir = await mkdtemp(path.join(tmpdir(), 'wanapis-mcp-seedance-upload-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'reference.png');
+  await writeFile(file, Buffer.from('offline image bytes'));
+  const result = await server.call('wanapis_generate_video', {
+    model: 'seedance-2.0-mini', prompt: 'scene', seconds: 4, reference_images: [file],
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(server.requests.length, 2);
+  assert.equal(server.requests[0].path, '/v1/media');
+  assert.equal(server.requests[0].body.model, 'seedance-2.0-mini');
+  assert.equal(server.requests[0].body.media_type, 'image');
+  assert.equal(server.requests[1].path, '/v1/video/generations');
+  const body = JSON.parse(server.requests[1].body);
+  assert.deepEqual(body.image_urls, ['https://offline.example/v1/media/media_offline_1?expires=9999999999&signature=offline']);
+  assert.equal(JSON.stringify(body).includes(file), false);
+});
+
+test('upload_media with a Seedance model returns a temporary URL', async (t) => {
+  const server = await startServer(t);
+  const dir = await mkdtemp(path.join(tmpdir(), 'wanapis-mcp-seedance-upload-tool-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'motion.mp4');
+  await writeFile(file, Buffer.from('offline video bytes'));
+  const result = await server.call('wanapis_upload_media', { path: file, media_type: 'video', model: 'seedance-2.0' });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.url, 'https://offline.example/v1/media/media_offline_1?expires=9999999999&signature=offline');
+  assert.equal(server.requests[0].path, '/v1/media');
+  assert.equal(server.requests[0].body.model, 'seedance-2.0');
+  assert.equal(server.requests[0].body.media_type, 'video');
+});
+
+test('upload_media returns the opaque asset and reuses a binding', async (t) => {
+  const server = await startServer(t);
+  const dir = await mkdtemp(path.join(tmpdir(), 'wanapis-mcp-upload-tool-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'motion.mp4');
+  await writeFile(file, Buffer.from('offline video bytes'));
+  const result = await server.call('wanapis_upload_media', { path: file, media_type: 'video', binding_asset_id: 'asset_existing_1' });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.asset_id, 'asset_offline_1');
+  assert.equal(server.requests[0].body.binding_asset_id, 'asset_existing_1');
+});
+
+test('content regeneration submits the original prompt and references to the source path', async (t) => {
+  const server = await startServer(t);
+  const result = await server.call('wanapis_regenerate_video', {
+    source_task_id: 'video-offline-1', mode: 'content', prompt: 'original prompt',
+    reference_images: ['https://cdn.example/r1.png'],
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.task_id, 'regen-offline-1');
+  assert.equal(server.requests[0].path, '/v1/videos/video-offline-1/regenerations');
+  const body = JSON.parse(server.requests[0].body);
+  assert.equal(body.mode, 'content');
+  assert.equal(body.resolution, '2K');
+  assert.deepEqual(body.content.map((item) => item.type), ['text', 'image_url']);
+});
+
+test('standalone prompt optimization is a text task with billing', async (t) => {
+  const server = await startServer(t);
+  const submitted = await server.call('wanapis_optimize_prompt', { prompt: 'make it cinematic' });
+  assert.equal(submitted.isError, undefined, JSON.stringify(submitted.data));
+  assert.equal(submitted.data.task_id, 'ir-offline-1');
+  assert.equal(server.requests[0].path, '/v1/videos/prompt-optimizations');
+  const checked = await server.call('wanapis_check_task', { task_id: 'ir-offline-1', kind: 'prompt' });
+  assert.equal(checked.data.status, 'completed');
+  assert.equal(checked.data.text, 'Improved offline prompt');
+  assert.equal(checked.data.billing.status, 'settled');
+  assert.equal(checked.data.costCny, 0.065);
+});
+
+test('H3 pending settlement is not reported as a final cost', async (t) => {
+  const server = await startServer(t, { TASK_PENDING: '1' });
+  const result = await server.call('wanapis_check_task', { task_id: 'video-offline-1' });
+  assert.equal(result.data.billing.status, 'pending_usage');
+  assert.equal(result.data.costCny, null);
+  assert.match(result.data.costNote, /reserved amount/);
+});
+
+test('H3 media estimate uses the reference-video reservation upper bound', async (t) => {
+  const server = await startServer(t);
+  const result = await server.call('wanapis_estimate_cost', {
+    model: 'minimax-h3', seconds: 4, resolution: '768P', context_ir_enabled: false,
+    reference_videos: ['https://cdn.example/ref.mp4'],
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.estimate_kind, 'reservation_upper_bound');
+  assert.equal(result.data.estimated_quota, 1170000);
+  assert.equal(result.data.breakdown.reference_video_reserved_seconds, 16);
+});
+
+test('Seedance media request uses the canonical apimart fields', async (t) => {
+  const server = await startServer(t);
+  const result = await server.call('wanapis_generate_video', {
+    model: 'seedance-2.0-mini', prompt: 'scene', quality: 'low', seconds: 4, aspect: '16:9',
+    reference_images: ['https://cdn.example/ref.png'],
+    reference_videos: ['https://cdn.example/ref.mp4'],
+    reference_audio: ['https://cdn.example/ref.mp3'],
+    generate_audio: false, return_last_frame: true, seed: 7,
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.data));
+  assert.equal(result.data.task_id, 'video-offline-1');
+  const body = JSON.parse(server.requests[0].body);
+  assert.equal(body.resolution, '480p');
+  assert.equal(body.duration, 4);
+  assert.equal(body.size, '16:9');
+  assert.deepEqual(body.image_urls, ['https://cdn.example/ref.png']);
+  assert.deepEqual(body.video_urls, ['https://cdn.example/ref.mp4']);
+  assert.deepEqual(body.audio_urls, ['https://cdn.example/ref.mp3']);
+  assert.equal(body.generate_audio, false);
+  assert.equal(body.return_last_frame, true);
+  assert.equal(body.seed, 7);
+});
+
+test('Seedance rejects H3 asset IDs before any HTTP request', async (t) => {
+  const server = await startServer(t);
+  const result = await server.call('wanapis_generate_video', {
+    model: 'seedance-2.0-mini', prompt: 'scene', reference_images: ['asset_0123456789abcdef0123456789abcdef'],
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.data.error, /H3 asset IDs/);
+  assert.equal(server.requests.length, 0);
 });
 
 test('finished image job can be checked again to download without generating twice', async (t) => {
@@ -256,7 +428,11 @@ for (const [name, args] of [
   ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', resolution: '2K', seconds: 16 }],
   ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', quality: 'high' }],
   ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', fast_mode: 'false' }],
-  ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', reference_images: ['https://cdn.example/a.png', 'https://cdn.example/b.png'] }],
+  ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', reference_images: Array.from({ length: 10 }, (_, i) => `https://cdn.example/${i}.png`) }],
+  ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', reference_videos: ['https://cdn.example/1.mp4', 'https://cdn.example/2.mp4', 'https://cdn.example/3.mp4', 'https://cdn.example/4.mp4'] }],
+  ['wanapis_generate_video', { model: 'minimax-h3', prompt: 'p', first_frame: 'https://cdn.example/a.png', last_frame: 'https://cdn.example/a.png' }],
+  ['wanapis_regenerate_video', { source_task_id: 'task-1', mode: 'source', prompt: 'p' }],
+  ['wanapis_optimize_prompt', { prompt: 'p', seconds: 3 }],
   ['wanapis_generate_image', { model: 'gpt-image-2.5-flare', prompt: 'p', n: 2 }],
   ['wanapis_generate_video', { model: 'seedance-2.0', prompt: 'p', context_ir_enabled: false }],
   ['wanapis_generate_image', { model: 'gpt-image-2', prompt: 'p', quality: 'max' }],

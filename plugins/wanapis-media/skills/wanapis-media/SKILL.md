@@ -1,6 +1,6 @@
 ---
 name: wanapis-media
-description: Generate images and video through WanAPIs, including GPT Image 2.5 Flare/Sunburst and MiniMax H3, plus Seedance, Veo, Kling, Midjourney, Seedream and Nano Banana. Use for generation, image editing, model discovery and budget estimates. Handles verified native parameters, async polling and media downloads.
+description: Generate and edit images and video through WanAPIs, including GPT Image 2.5 Flare/Sunburst, MiniMax H3 with multi-image/frame/video/audio references, local uploads, 2K regeneration and standalone prompt optimization, plus Seedance, Veo, Kling, Midjourney, Seedream and Nano Banana. Use for generation, editing, model discovery and budget estimates. Handles verified native parameters, async polling, billing status and media downloads.
 license: MIT
 ---
 
@@ -60,13 +60,65 @@ node scripts/wanapis.mjs video "a paper plane glides over a field" \
 ```
 
 Resolution: 480p / 768P / 1080p / 2K. Duration: integer 4–30 seconds, but 2K permits
-at most 15 seconds. Ratios: 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16. `--image <URL>`
-provides at most one opening-frame image, sent as an `input_reference` object.
-No multiple image inputs, reference video/audio, or 4K tier are supported.
+at most 15 seconds. Ratios: 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16.
 
-`--fast-mode true` doubles the video component; clips from 16 seconds double the
-entire video component. IR is a separate fee per request and is not doubled by
-either option. Pass booleans as the literal flag values `true` or `false`.
+H3 accepts up to 9 images (reference images plus one `first_frame` and one
+`last_frame`), up to 3 reference videos and up to 3 audio clips. Repeat
+`--reference-image`, `--reference-video` and `--reference-audio`; use
+`--first-frame` / `--last-frame` for explicit frame roles. A value may be a public
+URL, a data URI, an existing `asset_id`, or a local file path — local files are
+uploaded once and replaced by an opaque asset ID, and the remaining uploads bind to
+the same account. `--image <...>` remains the legacy single-image form.
+
+```sh
+node scripts/wanapis.mjs upload ./motion.mp4 --media-type video
+node scripts/wanapis.mjs video "the same character walks into the rain" \
+  --model minimax-h3 --reference-image ./character.png --reference-video ./motion.mp4 \
+  --reference-audio ./rain.mp3 --resolution 768P --seconds 4
+```
+
+`--fast-mode true` doubles the output and billable reference-material components;
+clips from 16 seconds double the entire video component. IR is a separate fee per
+request and is not doubled. First five images and audio have no material fee;
+extra images and reference-video seconds are billed. The service reserves the
+maximum input allowance before submission and refunds the difference after
+verified usage. `pending_usage` means the reservation is not yet the final charge.
+
+### Regeneration and prompt optimization
+
+2K regeneration starts from one of your successful 768P H3 originals. Content mode
+requires the original final prompt and every original reference material, unchanged;
+source mode is available only when the task's eligibility lists it.
+
+```sh
+node scripts/wanapis.mjs regenerate <source_task_id> --mode content \
+  --prompt "<original final prompt>" --reference-image ./original.png --out ./regen.mp4
+node scripts/wanapis.mjs optimize "make it cinematic" --seconds 4 --ratio 16:9
+```
+
+`optimize` is a text task (check it with `task <id> --kind prompt`), not a video. When
+using its text for a video, pass `--context-ir-enabled false` to avoid another IR fee.
+Regeneration and optimization are separate paid requests; the original generation
+remains billed.
+
+## Seedance
+
+Seedance 2.5 / 2.0 / 2.0-fast / 2.0-mini accept the same media shape, but their
+upstreams only fetch public URLs. Local files are uploaded to the gateway's
+temporary media relay and replaced with a signed URL before submission.
+
+```sh
+node scripts/wanapis.mjs video "the character turns toward the camera" \
+  --model seedance-2.0-mini --quality low --seconds 5 --aspect 16:9 \
+  --reference-image ./character.png --first-frame ./opening.png \
+  --last-frame ./ending.png --generate-audio true --out ./clip.mp4
+```
+
+`--quality` maps to 480p / 720p / 1080p; `--seconds` is 4–15. Media limits are 9
+images including frames, 3 reference videos and 3 audio clips. Video/audio
+references cannot be combined with first/last frames. Uploaded URLs expire after
+about six hours; upload again for a much later task. H3 `asset_id`s are not
+accepted by Seedance.
 
 ## Existing adapters
 
@@ -92,8 +144,12 @@ node scripts/wanapis.mjs task <task_id> --kind video --out ./clip.mp4
 ```
 
 Video URLs require authentication; image CDN URLs may be public. Use `--out` to
-keep a file, because result URLs expire with the upstream result. A local file path
-cannot serve as a remote reference image URL.
+keep a file, because result URLs expire with the upstream result. H3 `--reference-*`
+and `--first-frame`/`--last-frame` accept local paths (uploaded automatically) as
+well as public URLs or existing asset IDs. Seedance also accepts local paths; the
+CLI uploads them to the gateway's temporary relay and uses the signed URL. H3
+uploads return an `asset_id` for reuse; Seedance URLs expire after about six hours,
+so upload again rather than reusing an expired link. Uploading is free.
 
 Cancelling the client does not cancel upstream work or its charge. Do not retry a
 slow submission to make it faster. A failed or unknown submission needs inspection

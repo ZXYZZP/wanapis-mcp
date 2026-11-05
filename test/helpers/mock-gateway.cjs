@@ -6,6 +6,7 @@ let clockOffset = 0;
 let imageResolve;
 let imageReject;
 let downloadAttempts = 0;
+let uploadCount = 0;
 
 Date.now = () => realNow() + clockOffset;
 global.setTimeout = (callback, delay, ...args) => {
@@ -34,7 +35,42 @@ process.on('message', (message) => {
 
 global.fetch = async (input, options = {}) => {
   const url = new URL(String(input));
-  process.send({ type: 'http-request', path: url.pathname, method: options.method || 'GET', body: options.body, headers: Object.fromEntries(new Headers(options.headers)) });
+  let recordedBody = options.body;
+  if (recordedBody instanceof FormData) {
+    const fields = {};
+    for (const [key, value] of recordedBody.entries()) {
+      fields[key] = typeof value === 'string' ? value : { name: value.name, type: value.type, size: value.size };
+    }
+    recordedBody = fields;
+  }
+  process.send({ type: 'http-request', path: url.pathname, method: options.method || 'GET', body: recordedBody, headers: Object.fromEntries(new Headers(options.headers)) });
+  if (url.origin === 'https://offline.example' && url.pathname === '/v1/videos/assets') {
+    if (!(options.body instanceof FormData)) throw new Error('upload fixture expected multipart');
+    uploadCount += 1;
+    return new Response(JSON.stringify({ id: `asset_offline_${uploadCount}`, media_type: options.body.get('media_type'), status: 'ready', bytes: 12 }));
+  }
+  if (url.origin === 'https://offline.example' && url.pathname === '/v1/media') {
+    if (!(options.body instanceof FormData)) throw new Error('temporary media fixture expected multipart');
+    uploadCount += 1;
+    return new Response(JSON.stringify({
+      id: `media_offline_${uploadCount}`,
+      url: `https://offline.example/v1/media/media_offline_${uploadCount}?expires=9999999999&signature=offline`,
+      media_type: options.body.get('media_type'),
+      bytes: options.body.get('file')?.size ?? 0,
+      expires_at: 9999999999,
+    }));
+  }
+  if (url.origin === 'https://offline.example' && url.pathname === '/v1/videos/video-offline-1/regenerations') {
+    return new Response(JSON.stringify({ id: 'regen-offline-1', task_id: 'regen-offline-1', status: 'queued', operation: 'regenerate' }));
+  }
+  if (url.origin === 'https://offline.example' && url.pathname === '/v1/videos/prompt-optimizations') {
+    return new Response(JSON.stringify({ id: 'ir-offline-1', object: 'prompt_optimization', status: 'queued' }));
+  }
+  if (url.origin === 'https://offline.example' && url.pathname === '/v1/videos/prompt-optimizations/ir-offline-1') {
+    return new Response(JSON.stringify({ id: 'ir-offline-1', object: 'prompt_optimization', status: 'completed',
+      result: { text: 'Improved offline prompt' },
+      billing: { status: 'settled', currency: 'CNY', quota_per_unit: 500000, reserved_quota: 32500, charged_quota: 32500, refunded_quota: 0 } }));
+  }
   if (url.origin === 'https://offline.example' && url.pathname === '/v1/images/generations') {
     return new Promise((resolve, reject) => { imageResolve = resolve; imageReject = reject; });
   }
@@ -52,10 +88,13 @@ global.fetch = async (input, options = {}) => {
     return new Response(JSON.stringify(catalog));
   }
   if (url.origin === 'https://offline.example' && url.pathname === '/v1/video/generations/video-offline-1') {
+    const pending = process.env.TASK_PENDING === '1';
     return new Response(JSON.stringify({ code: 'success', data: {
       task_id: 'video-offline-1', status: process.env.TASK_FAILURE === '1' ? 'FAILURE' : 'SUCCESS',
       fail_reason: process.env.TASK_FAILURE === '1' ? 'offline render failed' : '', quota: 266500,
       result_url: 'https://offline.example/v1/videos/video-offline-1/content',
+      billing: { status: pending ? 'pending_usage' : 'settled', currency: 'CNY', quota_per_unit: 500000,
+        reserved_quota: 266500, ...(pending ? {} : { charged_quota: 266500 }), refunded_quota: 0 },
     } }));
   }
   if (url.href === 'https://offline.example/v1/videos/video-offline-1/content') {

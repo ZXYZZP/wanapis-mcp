@@ -33,6 +33,7 @@ export function listCatalogModels(catalog, kind = 'all') {
         tiers: entry.video_pricing ?? entry.image_pricing ?? null,
         image_tier_ratios: entry.image_tier_ratios ?? null,
         video_pricing_meta: entry.video_pricing_meta ?? null,
+        video_input_meta: entry.video_input_meta ?? null,
         enable_groups: entry.enable_groups ?? [], capabilities: modelCapabilities(id),
       });
     }

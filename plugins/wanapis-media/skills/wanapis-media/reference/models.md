@@ -8,10 +8,10 @@ Run `node scripts/wanapis.mjs models` for the live pricing feed, or
 
 | Model | Billing | Duration | Notes |
 |---|---|---|---|
-| `seedance-2.5` | per second | 4–15s | Newest generation; best quality and shot consistency |
-| `seedance-2.0` | per second | 4–15s | Standard quality tier |
-| `seedance-2.0-fast` | per second | 4–15s | Faster, cheaper; good for drafts |
-| `seedance-2.0-mini` | per second | 4–15s | Cheapest. Use for iterating on a prompt |
+| `seedance-2.5` | per second | 4–15s | Newest generation; best quality and shot consistency; local upload |
+| `seedance-2.0` | per second | 4–15s | Standard quality tier; local upload |
+| `seedance-2.0-fast` | per second | 4–15s | Faster, cheaper; good for drafts; local upload |
+| `seedance-2.0-mini` | per second | 4–15s | Cheapest. Use for iterating on a prompt; local upload |
 | `veo3.1-quality` | **per call** | fixed | Google Veo 3.1. 4K with synchronised audio. Expensive |
 | `veo3.1-fast` | per call | fixed | Veo 3.1, speed tier |
 | `veo3.1-lite` | per call | fixed | Veo 3.1, cheapest tier |
@@ -47,12 +47,28 @@ are independent and multiply in the tier budget. Defaults explicitly use low/1k/
 `--count` maps to `n`. Repeat `--reference-image URL` for editing. Actual usage may
 exceed the tier precharge; references, size and text can cause a completion debit.
 
+Seedance: `--quality low|medium|high` maps to 480p/720p/1080p, `--seconds` 4–15,
+`--aspect` ratio, `--generate-audio true|false`, `--return-last-frame true|false`
+and `--seed N`. Media: up to9 images including `--first-frame` and `--last-frame`,
+up to3 `--reference-video`, up to3 `--reference-audio`; video/audio cannot be
+combined with first/last frames. Values may be public URLs, data URIs or local
+paths. Local paths are uploaded by the CLI to the gateway's temporary relay and
+replaced with a signed public URL (about six hours); upload again after expiry.
+H3 `asset_id`s are not accepted.
+
 H3: `--resolution 480p|768P|1080p|2K`, `--seconds` integer4–30 (2K≤15),
-`--ratio 21:9|16:9|4:3|1:1|3:4|9:16`, `--image URL` for at most one opening frame,
-`--fast-mode true|false`, `--context-ir-enabled true|false`. Defaults4s/768P/9:16,
-fast=false, IR=true. H3 does not use `quality`. Its budget is `(per-second price ×
-seconds × long multiplier × priority multiplier + IR fee) × assumed group ratio`.
-The per-request IR fee is not doubled. No H3 Max, 4K or multiple reference inputs.
+`--ratio 21:9|16:9|4:3|1:1|3:4|9:16`, `--fast-mode true|false`,
+`--context-ir-enabled true|false`. Defaults4s/768P/9:16, fast=false, IR=true.
+H3 does not use `quality`. Media: up to9 images including `--first-frame` and
+`--last-frame`, up to3 `--reference-video`, up to3 `--reference-audio`; repeat the
+flags. Values may be public URLs, data URIs, existing `asset_id`s or local paths
+(local files are uploaded automatically; uploading is free). The first five images
+and audio have no material fee; extra images and reference-video seconds are
+billed. The service reserves the maximum input allowance and settles to verified
+usage; `pending_usage` is not the final charge. `--image` remains the legacy single
+input_reference form. Content-mode 2K regeneration requires the original final
+prompt and all original media; use `regenerate`. Standalone text optimization is
+`optimize` (separate paid request). No H3 Max or 4K tier.
 
 Current prices and H3 metadata come from the public feed. `--group-ratio` affects
 estimation only and defaults1; it does not discover or select the key's route.
@@ -80,9 +96,12 @@ whatsoever — everything goes in the prompt as `--ar` / `--q` flags.
 
 ## Image-to-video
 
-Pass `--image <url>` to `video`. The URL must be publicly reachable; a local path
-will not work. H3 sends it as a single input_reference object; existing adapters
-keep their original request mappings.
+Pass `--image <url|local path>` to `video` for the legacy single-image form. URLs
+must be publicly reachable; local paths are uploaded automatically for H3 and
+Seedance. For multiple images, frame roles, reference video or audio, use the
+`--reference-*` and `--first-frame`/`--last-frame` flags. Existing non-H3,
+non-Seedance adapters keep their original request mappings and still require a
+remote URL.
 
 ## Aspect ratios
 

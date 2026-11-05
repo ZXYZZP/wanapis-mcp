@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 — 2026-11-05
+
+- Seedance: accept the canonical `image_urls` / `image_with_roles` / `video_urls` / `audio_urls` media shape, including first/last frames, up to 9 images, 3 reference videos and 3 audio clips. Local files are uploaded to the gateway's temporary media relay and replaced with a signed public URL; H3 `asset_id`s are rejected.
+- H3: accept up to 9 images including explicit first/last frames, up to 3 reference videos and 3 reference audio clips. Local media is uploaded once to an opaque `asset_id`; URLs, data URIs and existing assets are passed through. The legacy single `image_url` remains supported.
+- Add `wanapis_upload_media`, `wanapis_regenerate_video` (2K source/content modes) and `wanapis_optimize_prompt` (standalone text task). `wanapis_check_task` accepts `kind: "prompt"` and reports billing status, reserved/charged/refunded CNY and prompt text.
+- H3 media estimates return a reservation upper bound: extra images after the first five and reference-video seconds at the protocol input bound, with duration/priority multipliers and IR; pending settlement is not displayed as a final charge.
+- The standalone Skill CLI gains `upload`, `regenerate`, `optimize`, frame/reference flags, `task --kind prompt` and the same reservation billing output. Help and model reference updated.
+
 ## 0.1.2 — 2026-10-31
 
 - Add asynchronous GPT Image 2.5 Flare/Sunburst adapters with independent quality and resolution, image count and reference images. Defaults explicitly use low quality, 1k and one image.
