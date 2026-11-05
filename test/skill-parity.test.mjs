@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { VIDEO_MODELS, IMAGE_MODELS, QUALITY, buildVideoBody, buildImageBody } from '../src/models.js';
+import { VIDEO_MODELS, IMAGE_MODELS, QUALITY, buildVideoBody, buildImageBody, buildRegenerationBody } from '../src/models.js';
 import { parseCatalog, listCatalogModels } from '../src/catalog.js';
 import { estimateCost } from '../src/pricing.js';
 import * as skill from '../plugins/wanapis-media/skills/wanapis-media/scripts/wanapis.mjs';
@@ -159,4 +159,39 @@ test('standalone CLI catalog and estimate use public metadata and native default
   const rows = cli(['models']);
   assert.equal(rows.length, 5);
   assert.ok(!rows.some((r) => r.model === 'minimax-h3-max'));
+});
+
+test('standalone CLI submits H3 frames and references through one typed content request', () => {
+  const options = {
+    prompt: 'offline fixture', context_ir_enabled: false,
+    referenceImages: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+    firstFrame: 'https://cdn.example/first.png', lastFrame: 'https://cdn.example/last.png',
+    referenceVideos: ['https://cdn.example/ref.mp4'], referenceAudio: ['https://cdn.example/ref.mp3'],
+  };
+  const output = cli([
+    'video', 'offline fixture', '--model', 'minimax-h3', '--context-ir-enabled', 'false',
+    '--reference-image', 'https://cdn.example/a.png', '--reference-image', 'https://cdn.example/b.png',
+    '--first-frame', 'https://cdn.example/first.png', '--last-frame', 'https://cdn.example/last.png',
+    '--reference-video', 'https://cdn.example/ref.mp4', '--reference-audio', 'https://cdn.example/ref.mp3',
+  ], buildVideoBody('minimax-h3', options));
+  assert.equal(output.status, 'success');
+  assert.equal(output.chargedCny, 0.468);
+});
+
+test('standalone CLI estimates H3 reference reservations and runs prompt optimization', () => {
+  const estimate = cli(['estimate', '--model', 'minimax-h3', '--seconds', '4', '--context-ir-enabled', 'false', '--reference-video', 'https://cdn.example/ref.mp4']);
+  assert.equal(estimate.estimate_kind, 'reservation_upper_bound');
+  assert.equal(estimate.estimated_quota, 1170000);
+  const optimized = cli(['optimize', 'make it cinematic']);
+  assert.equal(optimized.text, 'Improved CLI prompt');
+  assert.equal(optimized.billing.status, 'settled');
+  assert.equal(optimized.chargedCny, 0.065);
+});
+
+test('standalone CLI submits content regeneration and reports pending settlement', () => {
+  const body = buildRegenerationBody({ mode: 'content', prompt: 'original prompt', referenceImages: ['https://cdn.example/a.png'] });
+  const output = cli(['regenerate', 'video-fixture', '--mode', 'content', '--prompt', 'original prompt', '--reference-image', 'https://cdn.example/a.png'], body);
+  assert.equal(output.billing.status, 'pending_usage');
+  assert.equal(output.billing.chargedCny, null);
+  assert.match(output.costNote, /reserved amount/);
 });

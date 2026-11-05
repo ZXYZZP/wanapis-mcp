@@ -13,7 +13,7 @@ export function normalizeEstimateOptions(model, options = {}) {
   else if (VIDEO_MODELS[model]?.family === 'h3') settings = normalizeVideoOptions(model, options);
   else {
     if (options.quality !== undefined && !['low', 'medium', 'high'].includes(options.quality)) throw new Error('quality must be low, medium or high for this model');
-    for (const field of ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled']) {
+    for (const field of ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled', 'referenceImages', 'firstFrame', 'lastFrame', 'referenceVideos', 'referenceAudio']) {
       if (options[field] !== undefined) throw new Error(`${field} is not supported for ${model}`);
     }
     if (options.count !== undefined && (!Number.isSafeInteger(options.count) || options.count < 1)) throw new Error('count must be a positive integer');
@@ -118,6 +118,52 @@ export function estimateCost(catalog, model, options = {}) {
     const fast = settings.fast_mode ? meta.fast_mode.multiplier : 1;
     const ir = settings.context_ir_enabled ? meta.context_ir.price : 0;
     const video = rate * settings.seconds * long * fast;
+    const imageCount = (settings.referenceImages?.length ?? 0) + Number(Boolean(settings.firstFrame)) + Number(Boolean(settings.lastFrame)) + Number(Boolean(settings.imageUrl));
+    const videoCount = settings.referenceVideos?.length ?? 0;
+    const audioCount = settings.referenceAudio?.length ?? 0;
+    const mediaRequested = imageCount > 0 || videoCount > 0 || audioCount > 0;
+    if (mediaRequested) {
+      const advanced = meta.advanced;
+      const caps = advanced?.capabilities;
+      const input = advanced?.input_pricing;
+      const limits = advanced?.limits;
+      if (!advanced || !caps || !input || !limits) {
+        return unavailable(model, groupRatio, 'Advanced H3 pricing metadata is missing; this media configuration cannot be priced', settings);
+      }
+      if ((imageCount > 0 && !caps.multi_image) || (videoCount > 0 && !caps.reference_video) || (audioCount > 0 && !caps.reference_audio)) {
+        return unavailable(model, groupRatio, 'The current H3 configuration does not enable this reference media', settings);
+      }
+      if (imageCount > (limits.max_images ?? 0) || videoCount > (limits.max_reference_videos ?? 0) || audioCount > (limits.max_reference_audios ?? 0)) {
+        return unavailable(model, groupRatio, 'Reference media exceeds the published H3 limits', settings);
+      }
+      const freeImages = Number.isSafeInteger(input.free_images) ? input.free_images : 5;
+      const extraImages = Math.max(0, imageCount - freeImages);
+      const extraPrice = input.extra_image_price;
+      if (extraImages > 0 && !finiteRate(extraPrice)) {
+        return unavailable(model, groupRatio, 'H3 extra-image pricing is missing', settings);
+      }
+      let referenceSeconds = 0;
+      let referenceRate = 0;
+      if (videoCount > 0) {
+        referenceRate = input.reference_video_price_per_second?.[settings.resolution];
+        referenceSeconds = videoCount === 1 ? input.reserved_input_video_seconds_single : input.reserved_input_video_seconds_multiple;
+        if (!finiteRate(referenceRate) || !Number.isSafeInteger(referenceSeconds) || referenceSeconds <= 0) {
+          return unavailable(model, groupRatio, 'H3 reference-video pricing or its reservation bound is missing', settings);
+        }
+      }
+      const videoFee = video;
+      const referenceFee = referenceRate * referenceSeconds * long * fast;
+      const imageFee = extraImages > 0 ? extraPrice * extraImages * long * fast : 0;
+      const amount = sum(sum(videoFee, referenceFee), sum(imageFee, ir));
+      return quoted(model, amount, groupRatio, {
+        basis: `(${rate}/s × ${settings.seconds}s + ref ${referenceRate}/s × reserved ${referenceSeconds}s + extra img ${extraPrice} × ${extraImages}) × long ${long} × fast ${fast} + IR ${ir}; × group ${groupRatio}`,
+        estimate_kind: 'reservation_upper_bound', pricing_version: meta.version, settings,
+        breakdown: { price_per_second: rate, seconds: settings.seconds, long_multiplier: long, fast_multiplier: fast,
+          video_fee: videoFee, reference_video_reserved_seconds: referenceSeconds, reference_video_fee: referenceFee,
+          image_count: imageCount, free_images: freeImages, extra_image_fee: imageFee, ir_fee: ir, audio_count: audioCount },
+        note: `${PRICE_NOTE} Reference-video seconds are reserved at the protocol upper bound (${referenceSeconds}s) and settle to verified input usage; a successful task can refund the difference.`,
+      });
+    }
     return quoted(model, sum(product(rate, settings.seconds, long, fast), ir), groupRatio, {
       basis: `(${rate}/s × ${settings.seconds}s × long ${long} × fast ${fast} + IR ${ir}) × group ${groupRatio}`,
       estimate_kind: 'specification_budget', pricing_version: meta.version, settings,

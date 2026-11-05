@@ -62,6 +62,9 @@ const IMAGE25_QUALITIES = ['low', 'medium', 'high', 'xhigh', 'max'];
 const IMAGE25_RESOLUTIONS = ['1k', '2k', '4k'];
 const H3_RESOLUTIONS = ['480p', '768P', '1080p', '2K'];
 const H3_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+const H3_MAX_IMAGES = 9;
+const H3_MAX_REFERENCE_VIDEOS = 3;
+const H3_MAX_REFERENCE_AUDIO = 3;
 const LEGACY_QUALITIES = ['low', 'medium', 'high'];
 
 function choice(value, allowed, field) {
@@ -97,6 +100,72 @@ function imageReferences(value) {
   return value.map((url) => text(url, 'reference image URL'));
 }
 
+function mediaList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return value.map((item) => text(item, field));
+}
+
+function mediaSource(value) {
+  return value.startsWith('asset_') ? { asset_id: value } : { url: value };
+}
+
+const isSeedanceModel = (model) => model.startsWith('seedance-');
+
+function seedanceMedia(options = {}) {
+  const referenceImages = mediaList(options.referenceImages, 'reference_images');
+  const referenceVideos = mediaList(options.referenceVideos, 'reference_videos');
+  const referenceAudio = mediaList(options.referenceAudio, 'reference_audio');
+  const firstFrame = options.firstFrame === undefined ? undefined : text(options.firstFrame, 'first_frame');
+  const lastFrame = options.lastFrame === undefined ? undefined : text(options.lastFrame, 'last_frame');
+  const imageCount = referenceImages.length + Number(Boolean(firstFrame)) + Number(Boolean(lastFrame));
+  if (imageCount > 9) throw new Error('Seedance accepts at most 9 images including frames');
+  if (referenceVideos.length > 3) throw new Error('Seedance accepts at most 3 reference videos');
+  if (referenceAudio.length > 3) throw new Error('Seedance accepts at most 3 audio clips');
+  if (firstFrame && lastFrame && firstFrame === lastFrame) throw new Error('first_frame and last_frame must be different media');
+  if (options.imageUrl !== undefined && imageCount > 0) throw new Error('image_url cannot be combined with reference_images or frame roles');
+  if (referenceAudio.length && !referenceImages.length && !firstFrame && !lastFrame && !referenceVideos.length) {
+    throw new Error('audio references require an image or video reference');
+  }
+  if ((firstFrame || lastFrame) && (referenceVideos.length || referenceAudio.length)) {
+    throw new Error('first/last-frame mode cannot be combined with video or audio references');
+  }
+  return { referenceImages, referenceVideos, referenceAudio, firstFrame, lastFrame, imageCount };
+}
+
+function seedanceBoolean(value, field) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`);
+  return value;
+}
+
+function seedanceSeed(value) {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('seed must be a non-negative integer');
+  return value;
+}
+
+function h3MediaContent(options = {}) {
+  const referenceImages = mediaList(options.referenceImages, 'reference_images');
+  const referenceVideos = mediaList(options.referenceVideos, 'reference_videos');
+  const referenceAudio = mediaList(options.referenceAudio, 'reference_audio');
+  const firstFrame = options.firstFrame === undefined ? undefined : text(options.firstFrame, 'first_frame');
+  const lastFrame = options.lastFrame === undefined ? undefined : text(options.lastFrame, 'last_frame');
+  const imageCount = referenceImages.length + Number(Boolean(firstFrame)) + Number(Boolean(lastFrame));
+  if (imageCount > H3_MAX_IMAGES) throw new Error(`minimax-h3 accepts at most ${H3_MAX_IMAGES} images including frames`);
+  if (referenceVideos.length > H3_MAX_REFERENCE_VIDEOS) throw new Error(`minimax-h3 accepts at most ${H3_MAX_REFERENCE_VIDEOS} reference videos`);
+  if (referenceAudio.length > H3_MAX_REFERENCE_AUDIO) throw new Error(`minimax-h3 accepts at most ${H3_MAX_REFERENCE_AUDIO} reference audio clips`);
+  if (firstFrame && lastFrame && firstFrame === lastFrame) throw new Error('first_frame and last_frame must be different media');
+  if (options.imageUrl !== undefined && imageCount > 0) throw new Error('image_url cannot be combined with reference_images or frame roles');
+  const content = [];
+  if (firstFrame) content.push({ type: 'image_url', role: 'first_frame', image_url: mediaSource(firstFrame) });
+  if (lastFrame) content.push({ type: 'image_url', role: 'last_frame', image_url: mediaSource(lastFrame) });
+  for (const value of referenceImages) content.push({ type: 'image_url', role: 'reference_image', image_url: mediaSource(value) });
+  for (const value of referenceVideos) content.push({ type: 'video_url', role: 'reference_video', video_url: mediaSource(value) });
+  for (const value of referenceAudio) content.push({ type: 'audio_url', role: 'reference_audio', audio_url: mediaSource(value) });
+  return { content, referenceImages, referenceVideos, referenceAudio, firstFrame, lastFrame, imageCount };
+}
+
 /** Shared by request building and pricing; it never makes network requests. */
 function normalizeImageOptions(model, options = {}) {
   const spec = IMAGE_MODELS[model];
@@ -129,7 +198,6 @@ function normalizeImageOptions(model, options = {}) {
 function normalizeVideoOptions(model, options = {}) {
   const spec = VIDEO_MODELS[model];
   if (!spec) throw new Error(`unknown video model: ${model}`);
-  unsupported(options, ['count', 'size', 'referenceImages'], model);
   if (spec.family === 'h3') {
     if (options.quality !== undefined) throw new Error('minimax-h3 uses resolution, not quality');
     if (options.aspect !== undefined && options.ratio !== undefined && options.aspect !== options.ratio) {
@@ -141,13 +209,46 @@ function normalizeVideoOptions(model, options = {}) {
       throw new Error(`minimax-h3 seconds must be 4–${resolution === '2K' ? 15 : 30} at ${resolution}`);
     }
     if (options.imageUrl !== undefined) text(options.imageUrl, 'image_url');
+    const media = h3MediaContent(options);
     return {
       resolution, seconds, ratio: choice(options.ratio ?? options.aspect ?? '9:16', H3_RATIOS, 'ratio'),
       fast_mode: boolean(options.fast_mode, false, 'fast_mode'),
       context_ir_enabled: boolean(options.context_ir_enabled, true, 'context_ir_enabled'),
       ...(options.imageUrl !== undefined ? { imageUrl: options.imageUrl } : {}),
+      ...(media.referenceImages.length ? { referenceImages: media.referenceImages } : {}),
+      ...(media.firstFrame ? { firstFrame: media.firstFrame } : {}),
+      ...(media.lastFrame ? { lastFrame: media.lastFrame } : {}),
+      ...(media.referenceVideos.length ? { referenceVideos: media.referenceVideos } : {}),
+      ...(media.referenceAudio.length ? { referenceAudio: media.referenceAudio } : {}),
     };
   }
+  if (isSeedanceModel(model)) {
+    unsupported(options, ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled'], model);
+    const media = seedanceMedia(options);
+    const quality = choice(options.quality ?? 'medium', LEGACY_QUALITIES, 'quality');
+    const seconds = options.seconds === undefined ? 5 : positiveInteger(options.seconds, 'seconds');
+    if (seconds < 4 || seconds > 15) throw new Error('Seedance seconds must be 4–15');
+    let aspect = options.aspect;
+    if (options.size !== undefined) {
+      if (aspect !== undefined && aspect !== options.size) throw new Error('size and aspect conflict');
+      aspect = options.size;
+    }
+    if (aspect !== undefined) text(aspect, 'aspect');
+    return {
+      quality, seconds,
+      ...(aspect !== undefined ? { aspect } : {}),
+      ...(media.referenceImages.length ? { referenceImages: media.referenceImages } : {}),
+      ...(media.firstFrame ? { firstFrame: media.firstFrame } : {}),
+      ...(media.lastFrame ? { lastFrame: media.lastFrame } : {}),
+      ...(media.referenceVideos.length ? { referenceVideos: media.referenceVideos } : {}),
+      ...(media.referenceAudio.length ? { referenceAudio: media.referenceAudio } : {}),
+      ...(options.imageUrl !== undefined ? { imageUrl: options.imageUrl } : {}),
+      ...(options.generateAudio !== undefined ? { generateAudio: seedanceBoolean(options.generateAudio, 'generate_audio') } : {}),
+      ...(options.returnLastFrame !== undefined ? { returnLastFrame: seedanceBoolean(options.returnLastFrame, 'return_last_frame') } : {}),
+      ...(options.seed !== undefined ? { seed: seedanceSeed(options.seed) } : {}),
+    };
+  }
+  unsupported(options, ['count', 'size', 'referenceImages', 'firstFrame', 'lastFrame', 'referenceVideos', 'referenceAudio'], model);
   unsupported(options, ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled'], model);
   return {
     quality: choice(options.quality ?? 'medium', LEGACY_QUALITIES, 'quality'),
@@ -162,9 +263,38 @@ function buildVideoBody(model, options = {}) {
   const spec = VIDEO_MODELS[model];
   if (spec.family === 'h3') {
     text(options.prompt, 'prompt');
-    const { imageUrl, ...native } = settings;
+    const { imageUrl, referenceImages, firstFrame, lastFrame, referenceVideos, referenceAudio, ...native } = settings;
+    const media = h3MediaContent({ referenceImages, firstFrame, lastFrame, referenceVideos, referenceAudio });
+    if (media.content.length) {
+      return { model, content: [{ type: 'text', text: options.prompt }, ...media.content], ...native };
+    }
     return { model, prompt: options.prompt, ...native,
       ...(imageUrl !== undefined ? { input_reference: { image_url: imageUrl } } : {}) };
+  }
+  if (isSeedanceModel(model)) {
+    text(options.prompt, 'prompt');
+    const body = {
+      model,
+      prompt: options.prompt,
+      resolution: QUALITY[spec.family]?.[settings.quality] ?? '720p',
+      duration: settings.seconds,
+    };
+    if (settings.aspect) body.size = settings.aspect;
+    const images = [];
+    if (settings.firstFrame) images.push({ url: settings.firstFrame, role: 'first_frame' });
+    if (settings.lastFrame) images.push({ url: settings.lastFrame, role: 'last_frame' });
+    for (const url of settings.referenceImages ?? []) images.push({ url, role: 'reference_image' });
+    if (images.length) {
+      if (images.some((image) => image.role !== 'reference_image')) body.image_with_roles = images;
+      else body.image_urls = images.map((image) => image.url);
+    }
+    if (settings.imageUrl) body.image_urls = [settings.imageUrl];
+    if (settings.referenceVideos?.length) body.video_urls = settings.referenceVideos;
+    if (settings.referenceAudio?.length) body.audio_urls = settings.referenceAudio;
+    if (settings.generateAudio !== undefined) body.generate_audio = settings.generateAudio;
+    if (settings.returnLastFrame !== undefined) body.return_last_frame = settings.returnLastFrame;
+    if (settings.seed !== undefined) body.seed = settings.seed;
+    return body;
   }
   const body = { model, prompt: options.prompt };
   const q = QUALITY[spec.family]?.[settings.quality];
@@ -178,6 +308,29 @@ function buildVideoBody(model, options = {}) {
   if (settings.seconds) body.duration = settings.seconds;
   if (settings.imageUrl) body.image_urls = [settings.imageUrl];
   return body;
+}
+
+function buildRegenerationBody(options = {}) {
+  const mode = options.mode ?? 'content';
+  if (mode !== 'source' && mode !== 'content') throw new Error('mode must be source or content');
+  if (options.imageUrl !== undefined) throw new Error('regeneration requires typed media, not image_url');
+  if (mode === 'source') {
+    for (const field of ['prompt', 'referenceImages', 'firstFrame', 'lastFrame', 'referenceVideos', 'referenceAudio']) {
+      if (options[field] !== undefined) throw new Error('source mode must not include prompt or reference media');
+    }
+    return { mode: 'source', resolution: '2K' };
+  }
+  text(options.prompt, 'prompt');
+  const media = h3MediaContent(options);
+  return { mode: 'content', resolution: '2K', content: [{ type: 'text', text: options.prompt }, ...media.content] };
+}
+
+function buildPromptOptimizationBody(options = {}) {
+  text(options.prompt, 'prompt');
+  const seconds = options.seconds === undefined ? 4 : positiveInteger(options.seconds, 'seconds');
+  if (seconds < 4 || seconds > 15) throw new Error('prompt optimization seconds must be 4–15');
+  const ratio = choice(options.ratio ?? '9:16', H3_RATIOS, 'ratio');
+  return { model: 'minimax-h3', content: [{ type: 'text', text: options.prompt }], duration: seconds, ratio };
 }
 
 function buildImageBody(model, options = {}) {
@@ -219,8 +372,21 @@ function modelCapabilities(model) {
   };
   if (video?.family === 'h3') return {
     resolution: H3_RESOLUTIONS, ratio: H3_RATIOS, seconds: { minimum: 4, maximum: 30, maximum_at_2K: 15 },
-    max_reference_images: 1, fast_mode: true, context_ir_enabled: true,
+    max_reference_images: H3_MAX_IMAGES, max_reference_videos: H3_MAX_REFERENCE_VIDEOS,
+    max_reference_audio: H3_MAX_REFERENCE_AUDIO, frame_roles: ['first_frame', 'last_frame'],
+    upload: true, regeneration: ['content'], prompt_optimization: true,
+    fast_mode: true, context_ir_enabled: true,
+    billing: 'reservation_then_actual_usage_settlement',
     defaults: { resolution: '768P', seconds: 4, ratio: '9:16', fast_mode: false, context_ir_enabled: true },
+  };
+  if (video && isSeedanceModel(model)) return {
+    quality: LEGACY_QUALITIES, resolution: ['480p', '720p', '1080p'],
+    seconds: { minimum: 4, maximum: 15 },
+    max_reference_images: 9, max_reference_videos: 3, max_reference_audios: 3,
+    frame_roles: ['first_frame', 'last_frame'], image_roles: ['reference_image', 'first_frame', 'last_frame'],
+    generate_audio: true, return_last_frame: true, seed: true,
+    billing: 'per_second',
+    defaults: { quality: 'medium', seconds: 5 },
   };
   return { quality: LEGACY_QUALITIES, defaults: { quality: 'medium', ...(video ? { seconds: 5 } : {}) } };
 }
@@ -260,6 +426,7 @@ function listCatalogModels(catalog, kind = 'all') {
         tiers: entry.video_pricing ?? entry.image_pricing ?? null,
         image_tier_ratios: entry.image_tier_ratios ?? null,
         video_pricing_meta: entry.video_pricing_meta ?? null,
+        video_input_meta: entry.video_input_meta ?? null,
         enable_groups: entry.enable_groups ?? [], capabilities: modelCapabilities(id),
       });
     }
@@ -282,7 +449,7 @@ function normalizeEstimateOptions(model, options = {}) {
   else if (VIDEO_MODELS[model]?.family === 'h3') settings = normalizeVideoOptions(model, options);
   else {
     if (options.quality !== undefined && !['low', 'medium', 'high'].includes(options.quality)) throw new Error('quality must be low, medium or high for this model');
-    for (const field of ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled']) {
+    for (const field of ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled', 'referenceImages', 'firstFrame', 'lastFrame', 'referenceVideos', 'referenceAudio']) {
       if (options[field] !== undefined) throw new Error(`${field} is not supported for ${model}`);
     }
     if (options.count !== undefined && (!Number.isSafeInteger(options.count) || options.count < 1)) throw new Error('count must be a positive integer');
@@ -387,6 +554,52 @@ function estimateCost(catalog, model, options = {}) {
     const fast = settings.fast_mode ? meta.fast_mode.multiplier : 1;
     const ir = settings.context_ir_enabled ? meta.context_ir.price : 0;
     const video = rate * settings.seconds * long * fast;
+    const imageCount = (settings.referenceImages?.length ?? 0) + Number(Boolean(settings.firstFrame)) + Number(Boolean(settings.lastFrame)) + Number(Boolean(settings.imageUrl));
+    const videoCount = settings.referenceVideos?.length ?? 0;
+    const audioCount = settings.referenceAudio?.length ?? 0;
+    const mediaRequested = imageCount > 0 || videoCount > 0 || audioCount > 0;
+    if (mediaRequested) {
+      const advanced = meta.advanced;
+      const caps = advanced?.capabilities;
+      const input = advanced?.input_pricing;
+      const limits = advanced?.limits;
+      if (!advanced || !caps || !input || !limits) {
+        return unavailable(model, groupRatio, 'Advanced H3 pricing metadata is missing; this media configuration cannot be priced', settings);
+      }
+      if ((imageCount > 0 && !caps.multi_image) || (videoCount > 0 && !caps.reference_video) || (audioCount > 0 && !caps.reference_audio)) {
+        return unavailable(model, groupRatio, 'The current H3 configuration does not enable this reference media', settings);
+      }
+      if (imageCount > (limits.max_images ?? 0) || videoCount > (limits.max_reference_videos ?? 0) || audioCount > (limits.max_reference_audios ?? 0)) {
+        return unavailable(model, groupRatio, 'Reference media exceeds the published H3 limits', settings);
+      }
+      const freeImages = Number.isSafeInteger(input.free_images) ? input.free_images : 5;
+      const extraImages = Math.max(0, imageCount - freeImages);
+      const extraPrice = input.extra_image_price;
+      if (extraImages > 0 && !finiteRate(extraPrice)) {
+        return unavailable(model, groupRatio, 'H3 extra-image pricing is missing', settings);
+      }
+      let referenceSeconds = 0;
+      let referenceRate = 0;
+      if (videoCount > 0) {
+        referenceRate = input.reference_video_price_per_second?.[settings.resolution];
+        referenceSeconds = videoCount === 1 ? input.reserved_input_video_seconds_single : input.reserved_input_video_seconds_multiple;
+        if (!finiteRate(referenceRate) || !Number.isSafeInteger(referenceSeconds) || referenceSeconds <= 0) {
+          return unavailable(model, groupRatio, 'H3 reference-video pricing or its reservation bound is missing', settings);
+        }
+      }
+      const videoFee = video;
+      const referenceFee = referenceRate * referenceSeconds * long * fast;
+      const imageFee = extraImages > 0 ? extraPrice * extraImages * long * fast : 0;
+      const amount = sum(sum(videoFee, referenceFee), sum(imageFee, ir));
+      return quoted(model, amount, groupRatio, {
+        basis: `(${rate}/s × ${settings.seconds}s + ref ${referenceRate}/s × reserved ${referenceSeconds}s + extra img ${extraPrice} × ${extraImages}) × long ${long} × fast ${fast} + IR ${ir}; × group ${groupRatio}`,
+        estimate_kind: 'reservation_upper_bound', pricing_version: meta.version, settings,
+        breakdown: { price_per_second: rate, seconds: settings.seconds, long_multiplier: long, fast_multiplier: fast,
+          video_fee: videoFee, reference_video_reserved_seconds: referenceSeconds, reference_video_fee: referenceFee,
+          image_count: imageCount, free_images: freeImages, extra_image_fee: imageFee, ir_fee: ir, audio_count: audioCount },
+        note: `${PRICE_NOTE} Reference-video seconds are reserved at the protocol upper bound (${referenceSeconds}s) and settle to verified input usage; a successful task can refund the difference.`,
+      });
+    }
     return quoted(model, sum(product(rate, settings.seconds, long, fast), ir), groupRatio, {
       basis: `(${rate}/s × ${settings.seconds}s × long ${long} × fast ${fast} + IR ${ir}) × group ${groupRatio}`,
       estimate_kind: 'specification_budget', pricing_version: meta.version, settings,
@@ -471,17 +684,19 @@ async function loadCatalog() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function pollTask(kind, taskId, { quiet } = {}) {
-  const p = kind === 'video'
-    ? `/v1/video/generations/${encodeURIComponent(taskId)}`
-    : `/v1/images/tasks/${encodeURIComponent(taskId)}`;
+  const p = kind === 'prompt'
+    ? `/v1/videos/prompt-optimizations/${encodeURIComponent(taskId)}`
+    : kind === 'video'
+      ? `/v1/video/generations/${encodeURIComponent(taskId)}`
+      : `/v1/images/tasks/${encodeURIComponent(taskId)}`;
   for (let i = 0; i < 80; i++) {
     await sleep(i < 4 ? 5000 : 15000);
     const payload = await api(p);
-    const d = payload?.data ?? {};
+    const d = payload?.data ?? payload ?? {};
     const status = String(d.status ?? '').toLowerCase();
     if (!quiet) process.stderr.write(`  ${status} ${d.progress ?? ''}\n`);
     if (DONE_OK.has(status)) return { payload, d };
-    if (DONE_BAD.has(status)) die(`生成失败: ${d.fail_reason || status}`);
+    if (DONE_BAD.has(status)) die(`生成失败: ${d.fail_reason || d.error?.message || status}`);
   }
   die('轮询超时(20 分钟)。任务可能仍在跑，用 task 子命令查:\n  ' +
       `node wanapis.mjs task ${taskId} --kind ${kind}`);
@@ -489,7 +704,18 @@ async function pollTask(kind, taskId, { quiet } = {}) {
 
 function report(d, urls, saved) {
   const out = { status: 'success', media: urls };
-  if (typeof d.quota === 'number') out.chargedCny = Number((d.quota / QUOTA_PER_CNY).toFixed(4));
+  const cny = (value) => typeof value === 'number' ? Number((value / QUOTA_PER_CNY).toFixed(4)) : null;
+  if (d.billing) {
+    out.billing = {
+      status: d.billing.status ?? null,
+      reservedCny: cny(d.billing.reserved_quota),
+      chargedCny: Number.isInteger(d.billing.charged_quota) ? cny(d.billing.charged_quota) : null,
+      refundedCny: cny(d.billing.refunded_quota),
+    };
+    if (out.billing.chargedCny != null) out.chargedCny = out.billing.chargedCny;
+    else out.costNote = 'reserved amount; awaiting verified usage settlement';
+  } else if (typeof d.quota === 'number') out.chargedCny = cny(d.quota);
+  if (typeof d.result?.text === 'string') out.text = d.result.text;
   const inner = d.data ?? {};
   if (inner.duration || inner.resolution) {
     out.actual = { duration: inner.duration ?? null, resolution: inner.resolution ?? null };
@@ -504,14 +730,14 @@ function die(msg) { console.error(msg); process.exit(1); }
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
-  const known = new Set(['model', 'quality', 'resolution', 'seconds', 'count', 'aspect', 'size', 'ratio', 'image', 'reference-image', 'fast-mode', 'context-ir-enabled', 'group-ratio', 'out', 'kind']);
+  const known = new Set(['model', 'quality', 'resolution', 'seconds', 'count', 'aspect', 'size', 'ratio', 'image', 'first-frame', 'last-frame', 'reference-image', 'reference-video', 'reference-audio', 'fast-mode', 'context-ir-enabled', 'generate-audio', 'return-last-frame', 'seed', 'group-ratio', 'out', 'kind', 'media-type', 'binding', 'mode', 'prompt']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (!arg.startsWith('--')) { positional.push(arg); continue; }
     const name = arg.slice(2);
     if (!known.has(name)) throw new Error(`Unknown option --${name}`);
     if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new Error(`--${name} needs a value`);
-    if (name === 'reference-image') (flags[name] ??= []).push(argv[++i]);
+    if (['reference-image', 'reference-video', 'reference-audio'].includes(name)) (flags[name] ??= []).push(argv[++i]);
     else flags[name] = argv[++i];
   }
   return { positional, flags };
@@ -533,36 +759,153 @@ function flagOptions(flags) {
   for (const name of ['seconds', 'count']) if (flags[name] !== undefined) options[name] = numericFlag(flags[name], name);
   if (flags.image !== undefined) options.imageUrl = flags.image;
   if (flags['reference-image'] !== undefined) options.referenceImages = flags['reference-image'];
-  for (const name of ['fast-mode', 'context-ir-enabled']) if (flags[name] !== undefined) options[name.replaceAll('-', '_')] = boolFlag(flags[name], name);
+  if (flags['first-frame'] !== undefined) options.firstFrame = flags['first-frame'];
+  if (flags['last-frame'] !== undefined) options.lastFrame = flags['last-frame'];
+  if (flags['reference-video'] !== undefined) options.referenceVideos = flags['reference-video'];
+  if (flags['reference-audio'] !== undefined) options.referenceAudio = flags['reference-audio'];
+  for (const name of ['fast-mode', 'context-ir-enabled', 'generate-audio', 'return-last-frame']) if (flags[name] !== undefined) options[name.replaceAll('-', '_')] = boolFlag(flags[name], name);
+  if (flags.seed !== undefined) {
+    const seed = numericFlag(flags.seed, 'seed');
+    if (!Number.isSafeInteger(seed) || seed < 0) throw new Error('--seed needs a non-negative integer');
+    options.seed = seed;
+  }
   return options;
+}
+
+const isRemoteMedia = (value) => /^(https?:|data:)/i.test(value);
+
+/** Upload local media once and replace it with the returned opaque asset ID. */
+async function apiUpload(filePath, mediaType, bindingAssetId) {
+  if (!['image', 'video', 'audio'].includes(mediaType)) throw new Error('media type must be image, video or audio');
+  const { readFile } = await import('node:fs/promises');
+  const filename = path.basename(filePath);
+  const buffer = await readFile(filePath);
+  const ext = path.extname(filename).toLowerCase();
+  const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.heic': 'image/heic', '.heif': 'image/heif', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4' }[ext] || 'application/octet-stream';
+  const form = new FormData();
+  form.append('model', 'minimax-h3');
+  form.append('media_type', mediaType);
+  if (bindingAssetId) form.append('binding_asset_id', bindingAssetId);
+  form.append('file', new Blob([buffer], { type: mime }), filename);
+  const res = await fetch(BASE + '/v1/videos/assets', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KEY}` },
+    body: form,
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(`上传返回非 JSON (${res.status})`); }
+  if (!res.ok) throw new Error(`${res.status}: ${json?.error?.message || json?.message || '上传失败'}`);
+  if (typeof json?.id !== 'string' || !json.id.startsWith('asset_')) throw new Error('上传响应缺少 asset_id');
+  return json;
+}
+
+async function resolveMediaValue(value, mediaType, state) {
+  if (value.startsWith('asset_')) { state.binding ??= value; return value; }
+  if (isRemoteMedia(value)) return value;
+  const asset = await apiUpload(value, mediaType, state.binding);
+  state.binding ??= asset.id;
+  return asset.id;
+}
+
+async function resolveMediaList(values, mediaType, state) {
+  if (values === undefined) return [];
+  const out = [];
+  for (const value of values) out.push(await resolveMediaValue(value, mediaType, state));
+  return out;
+}
+
+/** Seedance 上游只收公网 URL：本地文件先换成一个短时签名的公网地址。 */
+async function apiUploadTemporary(filePath, mediaType, model) {
+  if (!['image', 'video', 'audio'].includes(mediaType)) throw new Error('media type must be image, video or audio');
+  if (typeof model !== 'string' || !model.startsWith('seedance-')) throw new Error('model 必须是 seedance-*');
+  const { readFile } = await import('node:fs/promises');
+  const filename = path.basename(filePath);
+  const buffer = await readFile(filePath);
+  const ext = path.extname(filename).toLowerCase();
+  const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.heic': 'image/heic', '.heif': 'image/heif', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4' }[ext] || 'application/octet-stream';
+  const form = new FormData();
+  form.append('model', model);
+  form.append('media_type', mediaType);
+  form.append('file', new Blob([buffer], { type: mime }), filename);
+  const res = await fetch(BASE + '/v1/media', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KEY}` },
+    body: form,
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(`上传返回非 JSON (${res.status})`); }
+  if (!res.ok) throw new Error(`${res.status}: ${json?.error?.message || json?.message || '上传失败'}`);
+  if (typeof json?.url !== 'string' || !/^https?:\/\//i.test(json.url)) throw new Error('上传响应缺少公网 URL');
+  return json;
+}
+
+async function resolveSeedanceMediaValue(value, mediaType, model) {
+  if (typeof value !== 'string' || !value) throw new Error('media must be a non-empty string');
+  if (value.startsWith('asset_')) throw new Error('Seedance 不接受 H3 asset_id；请用 URL 或本地文件');
+  if (isRemoteMedia(value)) return value;
+  return (await apiUploadTemporary(value, mediaType, model)).url;
+}
+
+async function resolveSeedanceMediaList(values, mediaType, model) {
+  if (values === undefined) return undefined;
+  const out = [];
+  for (const value of values) out.push(await resolveSeedanceMediaValue(value, mediaType, model));
+  return out;
 }
 
 const HELP = `WanAPIs 生图/生视频 CLI
 
   estimate --model <m> [--quality <tier>] [--resolution <tier>] [--seconds N]
            [--count N] [--group-ratio N] [--fast-mode true|false]
-           [--context-ir-enabled true|false]
+           [--context-ir-enabled true|false] [--image N]
+           [--reference-image M] [--reference-video N] [--reference-audio N]
       公共价格预算，group-ratio 默认为1，不代表令牌实际分组。图片实际消耗可能更高。
+      H3 带参考素材时返回预留上界（参考视频按协议上限预留，成功后退差）。
 
   image "<prompt>" [--model gpt-image-2] [--quality low] [--aspect 1:1] [--out FILE]
       Image 2.5: --model gpt-image-2.5-flare|gpt-image-2.5-sunburst
         --quality low|medium|high|xhigh|max --resolution 1k|2k|4k --count N
         --reference-image <URL> (可重复)；默认显式low/1k/1张，提交异步任务。
   video "<prompt>" [--model seedance-2.0-mini] [--quality low] [--seconds 5]
-                   [--aspect 16:9] [--image <首帧图 URL>] [--out FILE]
+                   [--aspect 16:9] [--image <首帧图>] [--out FILE]
       H3: --model minimax-h3 --resolution 480p|768P|1080p|2K
-        --seconds 4..30 (2K最多15秒) --ratio 16:9 --image <单张首帧URL>
+        --seconds 4..30 (2K最多15秒) --ratio 16:9
+        --reference-image <URL|本地路径> (可重复，最多9张含帧)
+        --first-frame <图> --last-frame <图>
+        --reference-video <URL|本地路径> (可重复，最多3个)
+        --reference-audio <URL|本地路径> (可重复，最多3个)
         --fast-mode true|false --context-ir-enabled true|false
-        默认4秒/768P/9:16/fast=false/IR=true；不用quality。
+        默认4秒/768P/9:16/fast=false/IR=true；不用quality。本地文件自动上传为 asset_id。
+      Seedance: --quality low|medium|high (=480p/720p/1080p) --seconds 4..15
+        --aspect 16:9 --reference-image <URL|本地路径> (可重复，最多9张含帧)
+        --first-frame <图> --last-frame <图>
+        --reference-video <URL|本地路径> (可重复，最多3个)
+        --reference-audio <URL|本地路径> (可重复，最多3个)
+        --generate-audio true|false --return-last-frame true|false --seed N
+        本地文件会先上传为短时签名的公网 URL，再由上游读取。
 
-  task <task_id> --kind video|image [--out FILE]
+  upload <本地文件> --media-type image|video|audio [--model <m>] [--binding <asset_id>]
+      默认 H3，返回 asset_id；--model seedance-* 时返回短时公网 URL。
+      上传免费，不创建任务；Seedance 的 URL 过期后需重新上传。
+
+  regenerate <source_task_id> [--mode source|content] [--prompt "<原最终提示词>"]
+             [--reference-image ...] [--first-frame ...] [--last-frame ...]
+             [--reference-video ...] [--reference-audio ...] [--out FILE]
+      2K再生成。content模式必须原样重传原最终提示词和全部原始素材。
+
+  optimize "<prompt>" [--seconds 4..15] [--ratio 16:9]
+      独立提示词优化（文本任务，单独计费）。拿到结果后用于生成时加 --context-ir-enabled false。
+
+  task <task_id> --kind video|image|prompt [--out FILE]
       查已提交的任务(轮询中断后用它接回来)。
 
   models [--kind video|image]
 
 环境变量: WANAPIS_API_KEY(必需)、WANAPIS_BASE_URL(可选)
 
-注意:客户端中断【不会】取消上游任务，照样计费。宁可等，别重试。`;
+注意:客户端中断【不会】取消上游任务，照样计费。宁可等，别重试。H3账单可能先 pending_usage，预留不是最终消费。`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -616,10 +959,49 @@ async function main() {
     const prompt = positional.join(' ');
     if (!prompt) die('需要提示词');
     const model = flags.model ?? 'seedance-2.0-mini';
-    const body = buildVideoBody(model, { prompt, ...flagOptions(flags) });
+    let options = flagOptions(flags);
+    if (VIDEO_MODELS[model]?.family === 'h3') {
+      const state = {};
+      const referenceImages = await resolveMediaList(options.referenceImages, 'image', state);
+      const firstFrame = options.firstFrame === undefined ? undefined : await resolveMediaValue(options.firstFrame, 'image', state);
+      const lastFrame = options.lastFrame === undefined ? undefined : await resolveMediaValue(options.lastFrame, 'image', state);
+      const referenceVideos = await resolveMediaList(options.referenceVideos, 'video', state);
+      const referenceAudio = await resolveMediaList(options.referenceAudio, 'audio', state);
+      let imageUrl = options.imageUrl;
+      if (imageUrl !== undefined) {
+        if (imageUrl.startsWith('asset_')) { referenceImages.unshift(imageUrl); imageUrl = undefined; }
+        else if (!isRemoteMedia(imageUrl)) { referenceImages.unshift(await resolveMediaValue(imageUrl, 'image', state)); imageUrl = undefined; }
+      }
+      options = {
+        ...options, imageUrl,
+        ...(referenceImages.length ? { referenceImages } : {}),
+        ...(firstFrame ? { firstFrame } : {}),
+        ...(lastFrame ? { lastFrame } : {}),
+        ...(referenceVideos.length ? { referenceVideos } : {}),
+        ...(referenceAudio.length ? { referenceAudio } : {}),
+      };
+    }
+    if (model.startsWith('seedance-')) {
+      const referenceImages = await resolveSeedanceMediaList(options.referenceImages, 'image', model);
+      const referenceVideos = await resolveSeedanceMediaList(options.referenceVideos, 'video', model);
+      const referenceAudio = await resolveSeedanceMediaList(options.referenceAudio, 'audio', model);
+      const firstFrame = options.firstFrame === undefined ? undefined : await resolveSeedanceMediaValue(options.firstFrame, 'image', model);
+      const lastFrame = options.lastFrame === undefined ? undefined : await resolveSeedanceMediaValue(options.lastFrame, 'image', model);
+      const imageUrl = options.imageUrl === undefined ? undefined : await resolveSeedanceMediaValue(options.imageUrl, 'image', model);
+      options = {
+        ...options,
+        imageUrl,
+        ...(referenceImages !== undefined ? { referenceImages } : {}),
+        ...(firstFrame !== undefined ? { firstFrame } : {}),
+        ...(lastFrame !== undefined ? { lastFrame } : {}),
+        ...(referenceVideos !== undefined ? { referenceVideos } : {}),
+        ...(referenceAudio !== undefined ? { referenceAudio } : {}),
+      };
+    }
+    const body = buildVideoBody(model, { prompt, ...options });
     process.stderr.write(`提交 ${model}…(生视频通常 60~150 秒)\n`);
     const res = await api('/v1/video/generations', { method: 'POST', body });
-    const taskId = res?.task_id ?? (Array.isArray(res?.data) ? res.data[0]?.task_id : res?.data?.task_id);
+    const taskId = res?.task_id ?? res?.id ?? (Array.isArray(res?.data) ? res.data[0]?.task_id : res?.data?.task_id);
     if (!taskId) die(`响应里没有 task_id: ${JSON.stringify(res).slice(0, 200)}`);
     const { d } = await pollTask('video', taskId);
     const urls = extractMediaUrls({ data: d });
@@ -627,18 +1009,78 @@ async function main() {
     return;
   }
 
+  if (cmd === 'upload') {
+    const file = positional[0];
+    if (!file) die('需要本地文件路径');
+    const mediaType = flags['media-type'];
+    if (!mediaType) die('需要 --media-type image|video|audio');
+    const targetModel = flags.model ?? 'minimax-h3';
+    if (targetModel === 'minimax-h3') {
+      const asset = await apiUpload(file, mediaType, flags.binding);
+      console.log(JSON.stringify({ asset_id: asset.id, media_type: asset.media_type, status: asset.status, bytes: asset.bytes }, null, 2));
+      return;
+    }
+    if (targetModel.startsWith('seedance-')) {
+      if (flags.binding) die('--binding 仅适用于 H3');
+      const media = await apiUploadTemporary(file, mediaType, targetModel);
+      console.log(JSON.stringify({ url: media.url, media_type: media.media_type, bytes: media.bytes, expires_at: media.expires_at }, null, 2));
+      return;
+    }
+    die('--model 必须是 minimax-h3 或 seedance-*');
+  }
+
+  if (cmd === 'regenerate') {
+    const sourceTaskId = positional[0];
+    if (!sourceTaskId) die('需要源任务 ID');
+    const state = {};
+    const options = flagOptions(flags);
+    const body = buildRegenerationBody({
+      mode: flags.mode ?? 'content',
+      prompt: flags.prompt ?? (positional.slice(1).join(' ') || undefined),
+      ...(options.referenceImages?.length ? { referenceImages: await resolveMediaList(options.referenceImages, 'image', state) } : {}),
+      ...(options.firstFrame ? { firstFrame: await resolveMediaValue(options.firstFrame, 'image', state) } : {}),
+      ...(options.lastFrame ? { lastFrame: await resolveMediaValue(options.lastFrame, 'image', state) } : {}),
+      ...(options.referenceVideos?.length ? { referenceVideos: await resolveMediaList(options.referenceVideos, 'video', state) } : {}),
+      ...(options.referenceAudio?.length ? { referenceAudio: await resolveMediaList(options.referenceAudio, 'audio', state) } : {}),
+    });
+    process.stderr.write('提交 2K 再生成…\n');
+    const res = await api(`/v1/videos/${encodeURIComponent(sourceTaskId)}/regenerations`, { method: 'POST', body });
+    const taskId = res?.task_id ?? res?.id ?? (Array.isArray(res?.data) ? res.data[0]?.task_id : res?.data?.task_id);
+    if (!taskId) die(`响应里没有 task_id: ${JSON.stringify(res).slice(0, 200)}`);
+    const { d } = await pollTask('video', taskId);
+    const urls = extractMediaUrls({ data: d });
+    report(d, urls, await saveAll(urls, flags.out, taskId));
+    return;
+  }
+
+  if (cmd === 'optimize') {
+    const prompt = positional.join(' ');
+    if (!prompt) die('需要提示词');
+    const body = buildPromptOptimizationBody({ prompt, seconds: flags.seconds === undefined ? undefined : numericFlag(flags.seconds, 'seconds'), ratio: flags.ratio });
+    process.stderr.write('提交提示词优化(文本任务)…\n');
+    const res = await api('/v1/videos/prompt-optimizations', { method: 'POST', body });
+    const taskId = res?.task_id ?? res?.id ?? (Array.isArray(res?.data) ? res.data[0]?.task_id : res?.data?.task_id);
+    if (!taskId) die(`响应里没有 task_id: ${JSON.stringify(res).slice(0, 200)}`);
+    const { d } = await pollTask('prompt', taskId);
+    report(d, [], undefined);
+    return;
+  }
+
   if (cmd === 'task') {
     const taskId = positional[0];
     if (!taskId) die('需要 task_id');
     const kind = flags.kind ?? 'video';
-    const p = kind === 'video'
-      ? `/v1/video/generations/${encodeURIComponent(taskId)}`
-      : `/v1/images/tasks/${encodeURIComponent(taskId)}`;
+    const p = kind === 'prompt'
+      ? `/v1/videos/prompt-optimizations/${encodeURIComponent(taskId)}`
+      : kind === 'video'
+        ? `/v1/video/generations/${encodeURIComponent(taskId)}`
+        : `/v1/images/tasks/${encodeURIComponent(taskId)}`;
     const payload = await api(p);
-    const d = payload?.data ?? {};
+    const d = payload?.data ?? payload ?? {};
     const status = String(d.status ?? '').toLowerCase();
-    const urls = extractMediaUrls(payload);
     if (!DONE_OK.has(status)) { console.log(JSON.stringify({ status, progress: d.progress ?? null }, null, 2)); return; }
+    if (kind === 'prompt') { report(d, [], undefined); return; }
+    const urls = extractMediaUrls(payload);
     report(d, urls, await saveAll(urls, flags.out, taskId));
     return;
   }
@@ -659,7 +1101,7 @@ async function saveAll(urls, out, stem) {
   return saved;
 }
 
-export { VIDEO_MODELS, IMAGE_MODELS, QUALITY, buildVideoBody, buildImageBody, normalizeImageOptions, normalizeVideoOptions, modelCapabilities, parseCatalog, listCatalogModels, normalizeEstimateOptions, estimateCost, extractMediaUrls, flagOptions };
+export { VIDEO_MODELS, IMAGE_MODELS, QUALITY, buildVideoBody, buildImageBody, buildRegenerationBody, buildPromptOptimizationBody, normalizeImageOptions, normalizeVideoOptions, modelCapabilities, parseCatalog, listCatalogModels, normalizeEstimateOptions, estimateCost, extractMediaUrls, flagOptions };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((e) => die(String(e?.message ?? e)));

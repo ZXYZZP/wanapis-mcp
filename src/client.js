@@ -1,11 +1,19 @@
 /** WanAPIs HTTP 客户端。只做传输与信封解析，参数翻译在 models.js。 */
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_BASE = 'https://api.wanapis.com';
 
 /** 网关的计费单位:¥1 = 500000 quota。任务响应里的 quota 按这个折人民币。 */
 const QUOTA_PER_CNY = 500000;
+
+const UPLOAD_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.heic': 'image/heic', '.heif': 'image/heif',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+};
+const UPLOAD_LIMITS = { image: 30 << 20, video: 31 << 20, audio: 15 << 20 };
 
 const EXT_BY_TYPE = {
   'video/mp4': '.mp4',
@@ -65,9 +73,97 @@ export class WanApisClient {
     const d = json?.data;
     const taskId =
       json?.task_id ??
+      json?.id ??
       (Array.isArray(d) ? d[0]?.task_id : d?.task_id) ??
       null;
     return { taskId, raw: json };
+  }
+
+  /**
+   * Upload one local file and return the platform asset handle. The handle is
+   * opaque: no native file ID or provider URL is exposed. Subsequent uploads
+   * may bind to the first asset so a mixed set uses the same credential.
+   */
+  async uploadAsset(filePath, mediaType, bindingAssetId) {
+    if (!['image', 'video', 'audio'].includes(mediaType)) throw new Error('media_type must be image, video or audio');
+    const filename = path.basename(filePath);
+    let buffer;
+    try {
+      buffer = await readFile(filePath);
+    } catch {
+      throw new Error(`cannot read local media file: ${filename}`);
+    }
+    if (!buffer.length) throw new Error('media file is empty');
+    const limit = UPLOAD_LIMITS[mediaType];
+    if (buffer.length > limit) throw new Error(`media file exceeds ${limit} bytes`);
+    const mime = UPLOAD_MIME[path.extname(filename).toLowerCase()] || 'application/octet-stream';
+    const form = new FormData();
+    form.append('model', 'minimax-h3');
+    form.append('media_type', mediaType);
+    if (bindingAssetId) form.append('binding_asset_id', bindingAssetId);
+    form.append('file', new Blob([buffer], { type: mime }), filename);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 180000);
+    try {
+      const res = await fetch(this.baseUrl + '/v1/videos/assets', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        body: form,
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { throw new Error(`non-JSON upload response (${res.status})`); }
+      if (!res.ok) throw new Error(`${res.status}: ${json?.error?.message || json?.message || 'upload failed'}`);
+      if (typeof json?.id !== 'string' || !json.id.startsWith('asset_')) throw new Error('upload response has no asset_id');
+      return json;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Upload one local file for a Seedance generation and return a signed,
+   * expiring public URL. Unlike H3, the upstream only accepts public URLs, so
+   * the gateway keeps the bytes for a bounded time and lets the upstream fetch
+   * them. The URL never contains a provider name.
+   */
+  async uploadTemporaryMedia(filePath, mediaType, model) {
+    if (!['image', 'video', 'audio'].includes(mediaType)) throw new Error('media_type must be image, video or audio');
+    if (typeof model !== 'string' || !model.startsWith('seedance-')) throw new Error('model must be a Seedance model');
+    const filename = path.basename(filePath);
+    let buffer;
+    try {
+      buffer = await readFile(filePath);
+    } catch {
+      throw new Error(`cannot read local media file: ${filename}`);
+    }
+    if (!buffer.length) throw new Error('media file is empty');
+    const limit = UPLOAD_LIMITS[mediaType];
+    if (buffer.length > limit) throw new Error(`media file exceeds ${limit} bytes`);
+    const mime = UPLOAD_MIME[path.extname(filename).toLowerCase()] || 'application/octet-stream';
+    const form = new FormData();
+    form.append('model', model);
+    form.append('media_type', mediaType);
+    form.append('file', new Blob([buffer], { type: mime }), filename);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 180000);
+    try {
+      const res = await fetch(this.baseUrl + '/v1/media', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        body: form,
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { throw new Error(`non-JSON upload response (${res.status})`); }
+      if (!res.ok) throw new Error(`${res.status}: ${json?.error?.message || json?.message || 'upload failed'}`);
+      if (typeof json?.url !== 'string' || !/^https?:\/\//i.test(json.url)) throw new Error('upload response has no public URL');
+      return json;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -79,11 +175,20 @@ export class WanApisClient {
   }
 
   async fetchTask(kind, taskId) {
-    const path =
-      kind === 'video'
+    const path = kind === 'prompt'
+      ? `/v1/videos/prompt-optimizations/${encodeURIComponent(taskId)}`
+      : kind === 'video'
         ? `/v1/video/generations/${encodeURIComponent(taskId)}`
         : `/v1/images/tasks/${encodeURIComponent(taskId)}`;
     return this.#request(path);
+  }
+
+  async submitRegeneration(sourceTaskId, body) {
+    return this.submit(`/v1/videos/${encodeURIComponent(sourceTaskId)}/regenerations`, body);
+  }
+
+  async submitPromptOptimization(body) {
+    return this.submit('/v1/videos/prompt-optimizations', body);
   }
 
   async pricing() {
@@ -155,9 +260,12 @@ export function taskStatus(payload) {
   const d = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   const inner = d?.data && typeof d.data === 'object' ? d.data : null;
   const quota = typeof d?.quota === 'number' ? d.quota : null;
+  const cny = (value) => typeof value === 'number' ? Number((value / QUOTA_PER_CNY).toFixed(4)) : null;
+  const billing = d?.billing && typeof d.billing === 'object' ? d.billing : null;
+  const hasCharged = Number.isInteger(billing?.charged_quota);
 
   // 上游不保证按请求的规格出片 —— 实测请求 4 秒、出了 5 秒，并按 5 秒计费。
-  // 所以完成后要以 actual + costCny 为准，estimate_cost 只是事前预算。
+  // 所以完成后要以 actual + 结算后的 charged 为准，estimate_cost 只是事前预算。
   const actual = {
     duration: inner?.duration ?? null,
     resolution: inner?.resolution ?? null,
@@ -167,8 +275,17 @@ export function taskStatus(payload) {
   return {
     status: String(d?.status ?? '').toLowerCase(),
     progress: d?.progress ?? null,
-    costCny: quota != null ? Number((quota / QUOTA_PER_CNY).toFixed(4)) : null,
+    billing: billing ? {
+      status: billing.status ?? null,
+      currency: billing.currency ?? 'CNY',
+      reservedCny: cny(billing.reserved_quota),
+      chargedCny: hasCharged ? cny(billing.charged_quota) : null,
+      refundedCny: cny(billing.refunded_quota),
+    } : null,
+    costCny: hasCharged ? cny(billing.charged_quota) : (billing ? null : cny(quota)),
+    costNote: billing && !hasCharged ? 'reserved amount; awaiting verified usage settlement' : undefined,
     failReason: d?.fail_reason ?? d?.error?.message ?? null,
     actual: Object.values(actual).some((v) => v != null) ? actual : null,
+    text: typeof d?.result?.text === 'string' ? d.result.text : null,
   };
 }
