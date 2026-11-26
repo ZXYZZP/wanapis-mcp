@@ -275,10 +275,9 @@ const TOOLS = [
     description:
       'Check an async generation task. Returns status, progress, billing (reserved/charged/refunded CNY), ' +
       'the real cost once settled, and media URLs or prompt text when done. ' +
-      'IMPORTANT: media URLs require your WanAPIs key — opening one in a browser returns 401, ' +
-      'so do not hand the raw URL to a user. Pass save_dir to download the files locally instead. ' +
-      'H3 billing may remain pending_usage after the result succeeds; the reserved amount is not the final charge. ' +
-      'URLs also stop working once the upstream result expires (~24h).',
+      'IMPORTANT: gateway video proxy URLs (/v1/videos/.../content) require your WanAPIs key — opening one in a browser returns 401 — ' +
+      'whereas async image tasks return public upstream CDN URLs directly. Pass save_dir to download files locally before upstream links expire (~24h). ' +
+      'H3 billing may remain pending_usage after the result succeeds; the reserved amount is not the final charge.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -347,7 +346,7 @@ async function loadCatalog() {
 }
 
 const server = new Server(
-  { name: 'wanapis-mcp', version: '0.1.3' },
+  { name: 'wanapis-mcp', version: '0.1.4' },
   { capabilities: { tools: {} } }
 );
 
@@ -597,12 +596,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
 
+      const gatewayHost = new URL(client.baseUrl).host;
+      const needsKey = urls.some((u) => {
+        try { return new URL(u).host === gatewayHost; } catch { return false; }
+      });
+
       return ok({
         ...st,
         media: urls,
         saved,
         media_note: urls.length
-          ? 'URLs need the WanAPIs key (browser access returns 401) and expire with the upstream result. Pass save_dir to download.'
+          ? (needsKey
+            ? 'Gateway proxy URLs (/v1/videos/.../content) need the WanAPIs key (browser access returns 401) and expire with the upstream result. Pass save_dir to download.'
+            : 'Direct upstream media URLs do not require an API key, but expire with the upstream result (~24h). Pass save_dir to download locally.')
           : undefined,
       });
     }

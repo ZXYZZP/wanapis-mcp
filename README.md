@@ -58,9 +58,9 @@ Optional: `WANAPIS_BASE_URL` if you run a self-hosted gateway.
 | `wanapis_estimate_cost` | A budget from public live prices, with explicit settings and an assumed group multiplier. H3 media returns a reservation upper bound. |
 | `wanapis_list_models` | Current public catalog entries with verified adapters, native options and prices. |
 
-### GPT Image 2.5
+### GPT Image 2.5 / 2.6
 
-Use `gpt-image-2.5-flare` or `gpt-image-2.5-sunburst`. Both submit an async task;
+Use `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.6-flare`, or `gpt-image-2.6-sunburst`. All submit an async task;
 call `wanapis_check_task` with `kind: "image"` and the returned `task_id`.
 
 ```json
@@ -114,10 +114,10 @@ Media inputs (all optional):
 
 ### Seedance
 
-Seedance 2.5 / 2.0 / 2.0-fast / 2.0-mini accept the same style of media inputs,
+Seedance 2.5 / 2.5-flash / 2.0 / 2.0-fast / 2.0-mini accept the same style of media inputs,
 but their upstreams only fetch public URLs. The server handles this for you: local
 files are uploaded to the gateway's temporary media relay and replaced with a
-signed URL before submission.
+signed URL before submission. (`seedance-2-5-flash` supports `480p`/`720p`, `4–30s`, and up to 10 images / 5 videos / 5 audio clips.)
 
 ```json
 {

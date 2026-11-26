@@ -28,11 +28,11 @@ prices are precharges: reference images, dimensions and prompt content can raise
 actual usage and cause an additional debit on completion. Do not promise a final
 invoice from an estimate; inspect `chargedCny` and usage logs after completion.
 
-## GPT Image 2.5
+## GPT Image 2.5 / 2.6
 
-Both variants are asynchronous. Use `gpt-image-2.5-flare` or
-`gpt-image-2.5-sunburst`. Quality and resolution are independent; defaults are
-explicitly **low / 1k / one image**.
+All variants are asynchronous: `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`,
+`gpt-image-2.6-flare`, or `gpt-image-2.6-sunburst`. Quality and resolution are
+independent; defaults are explicitly **low / 1k / one image**.
 
 ```sh
 node scripts/wanapis.mjs image "a plain ceramic mug on a table" \
@@ -103,9 +103,9 @@ remains billed.
 
 ## Seedance
 
-Seedance 2.5 / 2.0 / 2.0-fast / 2.0-mini accept the same media shape, but their
-upstreams only fetch public URLs. Local files are uploaded to the gateway's
-temporary media relay and replaced with a signed URL before submission.
+Seedance 2.5 Flash / 2.5 / 2.0 / 2.0-fast / 2.0-mini accept the same media shape,
+but their upstreams only fetch public URLs. Local files are uploaded to the
+gateway's temporary media relay and replaced with a signed URL before submission.
 
 ```sh
 node scripts/wanapis.mjs video "the character turns toward the camera" \
@@ -114,8 +114,9 @@ node scripts/wanapis.mjs video "the character turns toward the camera" \
   --last-frame ./ending.png --generate-audio true --out ./clip.mp4
 ```
 
-`--quality` maps to 480p / 720p / 1080p; `--seconds` is 4–15. Media limits are 9
-images including frames, 3 reference videos and 3 audio clips. Video/audio
+`--quality` maps to 480p / 720p / 1080p (`seedance-2-5-flash` supports 480p / 720p,
+up to 30 seconds, and up to 10 images / 5 videos / 5 audio clips; other Seedance
+models support 4–15 seconds and up to 9 images / 3 videos / 3 audio clips). Video/audio
 references cannot be combined with first/last frames. Uploaded URLs expire after
 about six hours; upload again for a much later task. H3 `asset_id`s are not
 accepted by Seedance.

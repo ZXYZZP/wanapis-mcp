@@ -1,4 +1,4 @@
-import { IMAGE_MODELS, VIDEO_MODELS, normalizeImageOptions, normalizeVideoOptions } from './models.js';
+import { IMAGE_MODELS, QUALITY, VIDEO_MODELS, normalizeImageOptions, normalizeVideoOptions } from './models.js';
 
 const QUOTA_PER_CNY = 500000;
 const PRICE_NOTE = 'Public catalog budget with an assumed group multiplier; the API key route and final charge are not established by this estimate.';
@@ -61,12 +61,13 @@ function quoted(model, rawAmount, groupRatio, details) {
     ...details };
 }
 
-function legacyPrice(entry, { quality, seconds, count }) {
+function legacyPrice(model, entry, { quality, seconds, count }) {
   const tier = { low: '480p', medium: '720p', high: '1080p' };
   const imageTier = { low: '1K', medium: '2K', high: '4K' };
   const video = entry.video_pricing;
   if (video && seconds > 0) {
-    const rate = video[tier[quality]] ?? video['*'] ?? Object.values(video)[0];
+    const videoTier = QUALITY[VIDEO_MODELS[model]?.family]?.[quality] ?? tier[quality];
+    const rate = video[videoTier] ?? video['*'] ?? Object.values(video)[0];
     if (finiteRate(rate) && rate > 0) return { amount: rate * seconds, basis: `${rate}/s × ${seconds}s` };
   }
   const image = entry.image_pricing;
@@ -171,7 +172,7 @@ export function estimateCost(catalog, model, options = {}) {
       note: PRICE_NOTE,
     });
   }
-  const price = legacyPrice(entry, settings);
+  const price = legacyPrice(model, entry, settings);
   if (!price) return unavailable(model, groupRatio, 'No price configured for this model', settings);
   // Preserve the legacy four-decimal display while identifying it as a budget.
   return { model, estimate: Number((price.amount * groupRatio).toFixed(4)), currency: 'CNY',

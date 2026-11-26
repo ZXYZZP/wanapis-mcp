@@ -1,6 +1,7 @@
 /** Verified adapters: a catalog entry alone does not establish its request protocol. */
 export const QUALITY = {
   seedance: { low: '480p', medium: '720p', high: '1080p' },
+  seedance_flash: { low: '480p', medium: '720p', high: '720p' },
   veo: { low: '720p', medium: '1080p', high: '4k' },
   kling: { low: 'std', medium: 'pro', high: '4k' },
   vidu: { low: '540p', medium: '720p', high: '1080p' },
@@ -11,6 +12,7 @@ export const QUALITY = {
 };
 
 export const VIDEO_MODELS = {
+  'seedance-2-5-flash': { family: 'seedance_flash', billing: 'per-second', note: 'Seedance 2.5 极速版，480p/720p，4–30秒，支持 10 图/5 视频/5 音频参考' },
   'seedance-2.5': { family: 'seedance', billing: 'per-second', note: '最新一代，画质与一致性最好' },
   'seedance-2.0': { family: 'seedance', billing: 'per-second', note: '标准版，质量优先' },
   'seedance-2.0-fast': { family: 'seedance', billing: 'per-second', note: '速度版，适合草稿' },
@@ -29,6 +31,7 @@ export const VIDEO_MODELS = {
 export const IMAGE_MODELS = {
   'gpt-image-2': { family: 'gptimage', async: false, note: '主力模型，同步返回' },
   'gpt-image-2-official': { family: 'gptimage', async: true, note: '异步高清，支持 quality/resolution 分档' },
+  'seedream-5-5': { family: 'seedream', async: true, note: 'Seedream 5.5，1K/2K，支持透明背景与分层' },
   'seedream-5-0-pro': { family: 'seedream', async: true, note: 'Seedream 最强，1K/2K 分档' },
   'seedream-5-0-lite': { family: 'seedream', async: true, note: 'Seedream 轻量' },
   'seedream-4-5': { family: 'seedream', async: true, note: 'Seedream 4.5' },
@@ -37,6 +40,8 @@ export const IMAGE_MODELS = {
   midjourney: { family: 'midjourney', async: true, note: '一次出 4 张(2x2 四宫格拆分)' },
   'gpt-image-2.5-flare': { family: 'gptimage25', async: true, note: '异步；独立质量/分辨率；默认low/1k/1张，按实际消耗结算' },
   'gpt-image-2.5-sunburst': { family: 'gptimage25', async: true, note: '异步编辑；支持参考图；默认low/1k/1张，按实际消耗结算' },
+  'gpt-image-2.6-flare': { family: 'gptimage25', async: true, note: '异步；独立质量/分辨率；默认low/1k/1张，按实际消耗结算' },
+  'gpt-image-2.6-sunburst': { family: 'gptimage25', async: true, note: '异步编辑；支持参考图；默认low/1k/1张，按实际消耗结算' },
 };
 
 export const IMAGE25_QUALITIES = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -92,17 +97,25 @@ function mediaSource(value) {
 }
 
 const isSeedanceModel = (model) => model.startsWith('seedance-');
+const isSeedanceFlash = (model) => model === 'seedance-2-5-flash';
 
-function seedanceMedia(options = {}) {
+function seedanceLimits(model) {
+  return isSeedanceFlash(model)
+    ? { maxImages: 10, maxVideos: 5, maxAudios: 5, maxSeconds: 30, resolutions: ['480p', '720p'] }
+    : { maxImages: 9, maxVideos: 3, maxAudios: 3, maxSeconds: 15, resolutions: ['480p', '720p', '1080p'] };
+}
+
+function seedanceMedia(options = {}, model = 'seedance-2.0') {
+  const limits = seedanceLimits(model);
   const referenceImages = mediaList(options.referenceImages, 'reference_images');
   const referenceVideos = mediaList(options.referenceVideos, 'reference_videos');
   const referenceAudio = mediaList(options.referenceAudio, 'reference_audio');
   const firstFrame = options.firstFrame === undefined ? undefined : text(options.firstFrame, 'first_frame');
   const lastFrame = options.lastFrame === undefined ? undefined : text(options.lastFrame, 'last_frame');
   const imageCount = referenceImages.length + Number(Boolean(firstFrame)) + Number(Boolean(lastFrame));
-  if (imageCount > 9) throw new Error('Seedance accepts at most 9 images including frames');
-  if (referenceVideos.length > 3) throw new Error('Seedance accepts at most 3 reference videos');
-  if (referenceAudio.length > 3) throw new Error('Seedance accepts at most 3 audio clips');
+  if (imageCount > limits.maxImages) throw new Error(`Seedance accepts at most ${limits.maxImages} images including frames`);
+  if (referenceVideos.length > limits.maxVideos) throw new Error(`Seedance accepts at most ${limits.maxVideos} reference videos`);
+  if (referenceAudio.length > limits.maxAudios) throw new Error(`Seedance accepts at most ${limits.maxAudios} audio clips`);
   if (firstFrame && lastFrame && firstFrame === lastFrame) throw new Error('first_frame and last_frame must be different media');
   if (options.imageUrl !== undefined && imageCount > 0) throw new Error('image_url cannot be combined with reference_images or frame roles');
   if (referenceAudio.length && !referenceImages.length && !firstFrame && !lastFrame && !referenceVideos.length) {
@@ -205,10 +218,11 @@ export function normalizeVideoOptions(model, options = {}) {
   }
   if (isSeedanceModel(model)) {
     unsupported(options, ['resolution', 'ratio', 'fast_mode', 'context_ir_enabled'], model);
-    const media = seedanceMedia(options);
+    const limits = seedanceLimits(model);
+    const media = seedanceMedia(options, model);
     const quality = choice(options.quality ?? 'medium', LEGACY_QUALITIES, 'quality');
     const seconds = options.seconds === undefined ? 5 : positiveInteger(options.seconds, 'seconds');
-    if (seconds < 4 || seconds > 15) throw new Error('Seedance seconds must be 4–15');
+    if (seconds < 4 || seconds > limits.maxSeconds) throw new Error(`Seedance seconds must be 4–${limits.maxSeconds}`);
     let aspect = options.aspect;
     if (options.size !== undefined) {
       if (aspect !== undefined && aspect !== options.size) throw new Error('size and aspect conflict');
@@ -360,14 +374,17 @@ export function modelCapabilities(model) {
     billing: 'reservation_then_actual_usage_settlement',
     defaults: { resolution: '768P', seconds: 4, ratio: '9:16', fast_mode: false, context_ir_enabled: true },
   };
-  if (video && isSeedanceModel(model)) return {
-    quality: LEGACY_QUALITIES, resolution: ['480p', '720p', '1080p'],
-    seconds: { minimum: 4, maximum: 15 },
-    max_reference_images: 9, max_reference_videos: 3, max_reference_audios: 3,
-    frame_roles: ['first_frame', 'last_frame'], image_roles: ['reference_image', 'first_frame', 'last_frame'],
-    generate_audio: true, return_last_frame: true, seed: true,
-    billing: 'per_second',
-    defaults: { quality: 'medium', seconds: 5 },
-  };
+  if (video && isSeedanceModel(model)) {
+    const limits = seedanceLimits(model);
+    return {
+      quality: LEGACY_QUALITIES, resolution: limits.resolutions,
+      seconds: { minimum: 4, maximum: limits.maxSeconds },
+      max_reference_images: limits.maxImages, max_reference_videos: limits.maxVideos, max_reference_audios: limits.maxAudios,
+      frame_roles: ['first_frame', 'last_frame'], image_roles: ['reference_image', 'first_frame', 'last_frame'],
+      generate_audio: true, return_last_frame: true, seed: true,
+      billing: 'per_second',
+      defaults: { quality: 'medium', seconds: 5 },
+    };
+  }
   return { quality: LEGACY_QUALITIES, defaults: { quality: 'medium', ...(video ? { seconds: 5 } : {}) } };
 }
