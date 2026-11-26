@@ -500,3 +500,14 @@ test('Image 2.5 estimate multiplies independent tiers and count, labelled precha
   assert.equal(result.data.estimate_kind, 'tier_precharge');
   assert.match(result.data.note, /actual usage/i);
 });
+
+test('wanapis_check_task media_note distinguishes gateway proxy URLs from direct CDN image URLs', async (t) => {
+  const server = await startServer(t);
+  const img = await server.call('wanapis_check_task', { task_id: 'image-offline-1', kind: 'image' });
+  assert.deepEqual(img.data.media, ['https://cdn.example/image.png']);
+  assert.match(img.data.media_note, /do not require an API key/i);
+
+  const vid = await server.call('wanapis_check_task', { task_id: 'video-offline-1', kind: 'video' });
+  assert.deepEqual(vid.data.media, ['https://offline.example/v1/videos/video-offline-1/content']);
+  assert.match(vid.data.media_note, /need the WanAPIs key.*401/i);
+});

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-11-26
+
+- Add asynchronous image adapters for `seedream-5-5` (1K/2K) and `gpt-image-2.6-flare` / `gpt-image-2.6-sunburst` (native `quality` × `resolution` tiers with `image_tier_ratios` precharge estimates).
+- Add `seedance-2-5-flash` video adapter (`480p`/`720p`, `4–30s`, up to 10 images / 5 videos / 5 audio clips) and fix per-family quality tier resolution in `estimateCost` so `high` maps to `720p` instead of falling back to `480p`.
+- Distinguish direct CDN image URLs (no API key required, expire in ~24h) from gateway proxy URLs (require `Authorization: Bearer` header) in `wanapis_check_task` `media_note`.
+- Sync standalone Skill (`wanapis-media.zip`) and model reference with the new adapters.
+
 ## 0.1.3 — 2026-11-05
 
 - Seedance: accept the canonical `image_urls` / `image_with_roles` / `video_urls` / `audio_urls` media shape, including first/last frames, up to 9 images, 3 reference videos and 3 audio clips. Local files are uploaded to the gateway's temporary media relay and replaced with a signed public URL; H3 `asset_id`s are rejected.

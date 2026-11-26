@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildImageBody, buildVideoBody, buildRegenerationBody, buildPromptOptimizationBody, normalizeImageOptions, normalizeVideoOptions, submitPath } from '../src/models.js';
+import { buildImageBody, buildVideoBody, buildRegenerationBody, buildPromptOptimizationBody, normalizeImageOptions, normalizeVideoOptions, submitPath, modelCapabilities } from '../src/models.js';
 import { parseCatalog, listCatalogModels } from '../src/catalog.js';
 import { estimateCost } from '../src/pricing.js';
 import fixture from './helpers/catalog.cjs';
@@ -264,4 +264,47 @@ test('freeform estimates remain possible but never imply generation support', ()
   const result = estimateCost(catalog(), 'unsupported-image-fixture');
   assert.equal(result.estimate, 0.01);
   assert.equal(estimateCost(catalog(), 'missing').estimate, null);
+});
+
+test('GPT Image 2.6, Seedream 5.5, and Seedance 2.5 Flash adapters follow verified specs', () => {
+  for (const model of ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst']) {
+    assert.equal(submitPath('image', model), '/v1/images/tasks');
+    assert.deepEqual(buildImageBody(model, { prompt: 'lamp', quality: 'high', resolution: '2k', count: 2 }), {
+      model, prompt: 'lamp', quality: 'high', resolution: '2k', n: 2,
+    });
+  }
+  const c = catalog();
+  c.entries.set('gpt-image-2.6-flare', {
+    model_name: 'gpt-image-2.6-flare', model_price: 0.1805,
+    image_tier_ratios: { 'quality:medium': 1.76, 'quality:high': 2.14, 'quality:xhigh': 3.8, 'quality:max': 8.55, 'resolution:2k': 2, 'resolution:4k': 3.4 },
+  });
+  const est26 = estimateCost(c, 'gpt-image-2.6-flare', { quality: 'high', resolution: '2k', count: 1 });
+  assert.equal(est26.estimate_kind, 'tier_precharge');
+  assert.equal(est26.estimate, 0.77254);
+
+  assert.equal(submitPath('image', 'seedream-5-5'), '/v1/images/tasks');
+  assert.deepEqual(buildImageBody('seedream-5-5', { prompt: 'logo', quality: 'high', aspect: '1:1' }), {
+    model: 'seedream-5-5', prompt: 'logo', resolution: '2K', size: '1:1',
+  });
+
+  const flashBody = buildVideoBody('seedance-2-5-flash', {
+    prompt: 'ocean waves', quality: 'high', seconds: 25,
+    referenceImages: Array.from({ length: 10 }, (_, i) => `https://cdn.example/${i}.png`),
+    referenceVideos: Array.from({ length: 5 }, (_, i) => `https://cdn.example/${i}.mp4`),
+    referenceAudio: Array.from({ length: 5 }, (_, i) => `https://cdn.example/${i}.mp3`),
+  });
+  assert.equal(flashBody.resolution, '720p');
+  assert.equal(flashBody.duration, 25);
+  assert.equal(flashBody.image_urls.length, 10);
+  assert.equal(flashBody.video_urls.length, 5);
+  assert.equal(flashBody.audio_urls.length, 5);
+  assert.throws(() => normalizeVideoOptions('seedance-2-5-flash', { seconds: 31 }), /4–30/);
+  assert.deepEqual(modelCapabilities('seedance-2-5-flash').resolution, ['480p', '720p']);
+
+  c.entries.set('seedance-2-5-flash', {
+    model_name: 'seedance-2-5-flash', model_price: 1.291472,
+    video_pricing: { '480p': 0.574392, '720p': 1.291472 },
+  });
+  assert.equal(estimateCost(c, 'seedance-2-5-flash', { quality: 'high', seconds: 5 }).estimate, 6.4574);
+  assert.equal(estimateCost(c, 'seedance-2-5-flash', { quality: 'low', seconds: 5 }).estimate, 2.872);
 });

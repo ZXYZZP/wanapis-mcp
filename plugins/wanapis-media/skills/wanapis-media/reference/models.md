@@ -8,6 +8,7 @@ Run `node scripts/wanapis.mjs models` for the live pricing feed, or
 
 | Model | Billing | Duration | Notes |
 |---|---|---|---|
+| `seedance-2-5-flash` | per second | 4–30s | Fast 2.5 tier; 480p/720p; up to 10 img / 5 vid / 5 audio; local upload |
 | `seedance-2.5` | per second | 4–15s | Newest generation; best quality and shot consistency; local upload |
 | `seedance-2.0` | per second | 4–15s | Standard quality tier; local upload |
 | `seedance-2.0-fast` | per second | 4–15s | Faster, cheaper; good for drafts; local upload |
@@ -33,7 +34,10 @@ roughly 3× the same model at 5 seconds; a per-call model costs the same either 
 | `gpt-image-2-official` | async | Higher fidelity, quality/resolution tiers |
 | `gpt-image-2.5-flare` | async | Independent native quality and resolution; references and image count |
 | `gpt-image-2.5-sunburst` | async | Same parameters, editing-focused; references and image count |
-| `seedream-5-0-pro` | async | Strongest Seedream, 1K/2K |
+| `gpt-image-2.6-flare` | async | Independent native quality and resolution; references and image count |
+| `gpt-image-2.6-sunburst` | async | Same parameters, editing-focused; references and image count |
+| `seedream-5-5` | async | Seedream 5.5, 1K/2K, transparent background & layer decomposition |
+| `seedream-5-0-pro` | async | Strongest Seedream 5.0, 1K/2K |
 | `seedream-5-0-lite` | async | Lighter Seedream |
 | `seedream-4-5` | async | Previous generation |
 | `nano-banana-pro` | sync | Gemini 3 Pro Image. 1K/2K/4K |
